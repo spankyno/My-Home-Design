@@ -60,6 +60,19 @@ Funciona de manera completamente **offline y sin registro de usuario**, almacena
 
 ---
 
+### Edición directa en el plano 2D
+Selecciona cualquier elemento con un clic y manipúlalo con el ratón (el panel de propiedades sigue disponible para valores exactos):
+
+| Elemento | Mover | Cambiar tamaño / forma |
+|---|---|---|
+| Mueble | Arrastrar el cuerpo | 8 asas (esquinas y lados, también girado). En esquinas respeta "bloquear proporciones"; **Shift** lo invierte. Pomo ● para girar |
+| Habitación rectangular | Arrastrar el cuerpo | 8 asas: el lado opuesto queda fijo y los muros siguen. Se muestran las medidas en vivo |
+| Habitación irregular | Arrastrar el cuerpo | Arrastrar un vértice |
+| Muro | Arrastrar el cuerpo | Arrastrar un extremo (las puertas/ventanas se recolocan dentro del muro) |
+| Puerta / ventana | Arrastrar: se desliza por su muro | Asas laterales para cambiar el ancho |
+
+Cada gesto es **un único paso** de deshacer. Un simple clic nunca desplaza el objeto (hay un umbral de arrastre de 4 px).
+
 ## Estructura del Código
 
 ```text
