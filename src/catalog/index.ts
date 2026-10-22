@@ -1,4 +1,4 @@
-import { FurnitureCategory } from '../types';
+import { FurnitureCategory, OpeningType } from '../types';
 
 export interface CatalogItemDefinition {
   id: string;
@@ -433,3 +433,23 @@ export const CATEGORY_LABELS: Record<FurnitureCategory, string> = {
   generico: 'Objetos Genéricos',
   personalizado: 'Mi Biblioteca',
 };
+
+export interface OpeningDefinition {
+  type: OpeningType;
+  name: string;
+  desc: string;
+  width: number;
+  height: number;
+  /** Sill height above the floor (mm). */
+  elevation: number;
+}
+
+/** Doors and windows with their real default sizes (used by the sidebar and by placement on the plan). */
+export const OPENING_CATALOG: OpeningDefinition[] = [
+  { type: 'door', name: 'Puerta Batiente', desc: '800 × 2050 mm con arco', width: 800, height: 2050, elevation: 0 },
+  { type: 'double_door', name: 'Puerta Doble', desc: '1400 × 2050 mm de 2 hojas', width: 1400, height: 2050, elevation: 0 },
+  { type: 'sliding_door', name: 'Puerta Corredera', desc: '900 × 2050 mm empotrada', width: 900, height: 2050, elevation: 0 },
+  { type: 'window', name: 'Ventana Estándar', desc: '1200 × 1200 mm (antepecho 900)', width: 1200, height: 1200, elevation: 900 },
+  { type: 'french_window', name: 'Balconera / Ventanal', desc: '1600 × 2100 mm a suelo', width: 1600, height: 2100, elevation: 0 },
+  { type: 'passage', name: 'Hueco de Paso', desc: '900 × 2100 mm sin hoja', width: 900, height: 2100, elevation: 0 },
+];

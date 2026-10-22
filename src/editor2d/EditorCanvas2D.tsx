@@ -18,10 +18,8 @@ import {
   calculatePolygonArea,
   calculatePolygonPerimeter,
   calculatePolygonCentroid,
-  isPointInsidePolygon,
   calculateDynamicDimensions,
   projectPointOnSegment,
-  buildRectRoom,
   getBoundingBox,
 } from '../geometry';
 import {
@@ -41,8 +39,18 @@ import {
   moveOpeningAlongWall,
   resizeOpeningEnd,
 } from './manipulation';
-import { FURNITURE_CATALOG } from '../catalog';
+import { FURNITURE_CATALOG, OPENING_CATALOG } from '../catalog';
 import { newId } from '../utils/id';
+import { hitTest } from './hitTest';
+import { planOpeningPlacement } from './placement';
+import {
+  OBJECT_SNAP_PX,
+  SnapGuide,
+  adaptiveGridStep,
+  collectSnapLines,
+  rectOfBox,
+  snapRect,
+} from './snapping';
 
 /** What the user is dragging when they grab a handle (or an opening) of the selected object. */
 type HandleDrag =
@@ -95,8 +103,6 @@ export const EditorCanvas2D: React.FC = () => {
     setCursorWorldPos,
     selectObject,
     clearSelection,
-    addWall,
-    addRoomWithWalls,
     addOpening,
     addFurniture,
     updateFurniture,
@@ -105,7 +111,6 @@ export const EditorCanvas2D: React.FC = () => {
     updateWall,
     moveRoom,
     moveWall,
-    addManualDimension,
     setActiveTool,
     setPendingFurnitureCatalogId,
     setPendingOpeningType,
@@ -124,8 +129,6 @@ export const EditorCanvas2D: React.FC = () => {
       setCursorWorldPos: s.setCursorWorldPos,
       selectObject: s.selectObject,
       clearSelection: s.clearSelection,
-      addWall: s.addWall,
-      addRoomWithWalls: s.addRoomWithWalls,
       addOpening: s.addOpening,
       addFurniture: s.addFurniture,
       updateFurniture: s.updateFurniture,
@@ -134,7 +137,6 @@ export const EditorCanvas2D: React.FC = () => {
       updateWall: s.updateWall,
       moveRoom: s.moveRoom,
       moveWall: s.moveWall,
-      addManualDimension: s.addManualDimension,
       setActiveTool: s.setActiveTool,
       setPendingFurnitureCatalogId: s.setPendingFurnitureCatalogId,
       setPendingOpeningType: s.setPendingOpeningType,
@@ -163,16 +165,19 @@ export const EditorCanvas2D: React.FC = () => {
   const handleGrab = useRef<Point2D>({ x: 0, y: 0 }); // pointer offset from the handle centre at press time
   const pressOrigin = useRef<{ x: number; y: number } | null>(null);
   const dragStarted = useRef(false);
+  // Furniture pressed while part of a multi-selection: collapse to it on release if it was a click, not a drag.
+  const collapseTo = useRef<string | null>(null);
+  // Alignment guides shown while an object is magnetised to others, and whether Alt (no snapping) is held.
+  const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
+  const [altHeld, setAltHeld] = useState(false);
   // Snap targets frozen when a handle is grabbed, minus the geometry being edited. Otherwise the
   // dragged corner (and the walls following it) would snap to its own previous position.
   const dragSnapTargets = useRef<Point2D[] | null>(null);
 
   // Interactive drawing states
-  const [wallStartPoint, setWallStartPoint] = useState<Point2D | null>(null);
   const [currentMouseWorld, setCurrentMouseWorld] = useState<Point2D>({ x: 0, y: 0 });
-  const [rectRoomStart, setRectRoomStart] = useState<Point2D | null>(null);
-  const [polyRoomPoints, setPolyRoomPoints] = useState<Point2D[]>([]);
   const [measureStart, setMeasureStart] = useState<Point2D | null>(null);
+  const [measureEnd, setMeasureEnd] = useState<Point2D | null>(null);
 
   // Coordinate transformations
   const screenToWorld = useCallback(
@@ -202,9 +207,10 @@ export const EditorCanvas2D: React.FC = () => {
     (raw: Point2D, targets?: Point2D[]): Point2D => {
       if (!project.snapEnabled) return raw;
       const target = snapToTargets(raw, targets ?? getSnapTargets(), project.snapTolerance);
-      return target.snapped ? target.point : snapToGrid(raw, project.gridSize);
+      // The grid refines as you zoom in, so close placement is possible without fighting coarse steps.
+      return target.snapped ? target.point : snapToGrid(raw, adaptiveGridStep(project.gridSize, zoom));
     },
-    [project.snapEnabled, project.gridSize, project.snapTolerance, getSnapTargets]
+    [project.snapEnabled, project.gridSize, project.snapTolerance, getSnapTargets, zoom]
   );
 
   // Dynamic dimensions of the selected piece (derived data: no state/effect needed)
@@ -321,6 +327,7 @@ export const EditorCanvas2D: React.FC = () => {
 
     // 8. Draw In-Progress Drawing Previews
     drawEditHandles(ctx);
+    drawSnapGuides(ctx, snapGuides);
     drawInteractivePreviews(ctx);
     drawResizeReadout(ctx);
 
@@ -332,13 +339,13 @@ export const EditorCanvas2D: React.FC = () => {
     project,
     selectedIds,
     activeDynamicDims,
+    snapGuides,
+    altHeld,
     dragMode,
     handleDrag,
-    wallStartPoint,
     currentMouseWorld,
-    rectRoomStart,
-    polyRoomPoints,
     measureStart,
+    measureEnd,
     pendingFurnitureCatalogId,
     pendingOpeningType,
     screenToWorld,
@@ -1062,6 +1069,83 @@ export const EditorCanvas2D: React.FC = () => {
     ctx.restore();
   }
 
+  /** Ruler between two points: distance label plus the horizontal / vertical legs. Constant on-screen size. */
+  function drawMeasurement(ctx: CanvasRenderingContext2D, a: Point2D, b: Point2D) {
+    const px = 1 / zoom;
+    const dist = distance(a, b);
+
+    ctx.save();
+    ctx.strokeStyle = '#d97706';
+    ctx.lineWidth = 2 * px;
+
+    // Legs (dx, dy) as a light dashed right triangle
+    ctx.setLineDash([6 * px, 5 * px]);
+    ctx.globalAlpha = 0.55;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+
+    // Main line
+    ctx.lineWidth = 2.5 * px;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+
+    // End points
+    ctx.fillStyle = '#ffffff';
+    for (const pt of [a, b]) {
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 4.5 * px, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Distance label
+    if (dist > 1) {
+      const label = formatMeasurement(dist, project.unit);
+      ctx.font = `700 ${13 * px}px Inter, sans-serif`;
+      const w = ctx.measureText(label).width;
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+      ctx.fillStyle = '#b45309';
+      ctx.beginPath();
+      ctx.roundRect(mx - w / 2 - 8 * px, my - 22 * px, w + 16 * px, 22 * px, 5 * px);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, mx, my - 11 * px);
+    }
+    ctx.restore();
+  }
+
+  /** Alignment guides (magenta) shown while a piece is magnetised to another piece or a wall face. */
+  function drawSnapGuides(ctx: CanvasRenderingContext2D, guides: SnapGuide[]) {
+    if (guides.length === 0) return;
+    const px = 1 / zoom;
+    ctx.save();
+    ctx.strokeStyle = '#d946ef';
+    ctx.lineWidth = 1.5 * px;
+    ctx.setLineDash([6 * px, 4 * px]);
+    for (const g of guides) {
+      ctx.beginPath();
+      if (g.axis === 'x') {
+        ctx.moveTo(g.value, g.from);
+        ctx.lineTo(g.value, g.to);
+      } else {
+        ctx.moveTo(g.from, g.value);
+        ctx.lineTo(g.to, g.value);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   /** Room / wall handles go on a top layer: walls are painted after rooms and would hide them. */
   function drawEditHandles(ctx: CanvasRenderingContext2D) {
     if (selectedIds.length !== 1) return;
@@ -1117,84 +1201,18 @@ export const EditorCanvas2D: React.FC = () => {
 
   // Helper: In-Progress Tool Previews
   function drawInteractivePreviews(ctx: CanvasRenderingContext2D) {
-    // 1. Drawing wall
-    if (activeTool === 'draw_wall' && wallStartPoint) {
-      const len = distance(wallStartPoint, currentMouseWorld);
-      const angle = angleDeg(wallStartPoint, currentMouseWorld);
-
-      ctx.save();
-      ctx.strokeStyle = '#0284c7';
-      ctx.lineWidth = 140; // Default thickness preview
-      ctx.globalAlpha = 0.5;
-      ctx.beginPath();
-      ctx.moveTo(wallStartPoint.x, wallStartPoint.y);
-      ctx.lineTo(currentMouseWorld.x, currentMouseWorld.y);
-      ctx.stroke();
-      ctx.globalAlpha = 1.0;
-
-      // Draw dimension and angle badge
-      const midX = (wallStartPoint.x + currentMouseWorld.x) / 2;
-      const midY = (wallStartPoint.y + currentMouseWorld.y) / 2;
-      const label = `${formatMeasurement(len, project.unit)}  (${Math.round(angle)}°)`;
-
-      ctx.font = 'bold 130px Inter, sans-serif';
-      const textW = ctx.measureText(label).width;
-      ctx.fillStyle = '#0284c7';
-      ctx.beginPath();
-      ctx.roundRect(midX - textW / 2 - 40, midY - 80, textW + 80, 160, 30);
-      ctx.fill();
-      ctx.fillStyle = '#ffffff';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(label, midX, midY);
-
-      ctx.restore();
-    }
-
-    // 2. Drawing Rectangular Room
-    if (activeTool === 'draw_room_rect' && rectRoomStart) {
-      const minX = Math.min(rectRoomStart.x, currentMouseWorld.x);
-      const maxX = Math.max(rectRoomStart.x, currentMouseWorld.x);
-      const minY = Math.min(rectRoomStart.y, currentMouseWorld.y);
-      const maxY = Math.max(rectRoomStart.y, currentMouseWorld.y);
-      const w = maxX - minX;
-      const h = maxY - minY;
-      const areaM2 = (w * h) / 1_000_000;
-
-      ctx.save();
-      ctx.fillStyle = 'rgba(56, 189, 248, 0.2)';
-      ctx.fillRect(minX, minY, w, h);
-      ctx.strokeStyle = '#0284c7';
-      ctx.lineWidth = 150; // Wall thickness preview
-      ctx.strokeRect(minX, minY, w, h);
-
-      // Dimension labels
-      const label = `${formatMeasurement(w, project.unit)} × ${formatMeasurement(h, project.unit)} (${areaM2.toFixed(2)} m²)`;
-      ctx.font = 'bold 140px Inter, sans-serif';
-      const tw = ctx.measureText(label).width;
-      ctx.fillStyle = '#0284c7';
-      ctx.roundRect(minX + w / 2 - tw / 2 - 40, minY + h / 2 - 90, tw + 80, 180, 30);
-      ctx.fill();
-      ctx.fillStyle = '#ffffff';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(label, minX + w / 2, minY + h / 2);
-
-      ctx.restore();
-    }
-
-    // 3. Measuring distance preview
+    // 1. Measurement (live while picking the second point, fixed once picked)
     if (activeTool === 'measure_distance' && measureStart) {
-      const len = distance(measureStart, currentMouseWorld);
-      drawDimensionLine(ctx, measureStart, currentMouseWorld, formatMeasurement(len, project.unit), '#0284c7', true);
+      drawMeasurement(ctx, measureStart, measureEnd ?? currentMouseWorld);
     }
 
-    // 4. Ghost furniture placement preview
+    // 2. Ghost furniture placement preview (magnetised to pieces / walls, like a drag)
     if (activeTool === 'place_furniture' && pendingFurnitureCatalogId) {
       const cat = FURNITURE_CATALOG.find((c) => c.id === pendingFurnitureCatalogId);
       if (cat) {
+        const ghost = snapGhost(cat.defaultWidth, cat.defaultDepth, currentMouseWorld, altHeld);
         ctx.save();
-        ctx.translate(currentMouseWorld.x, currentMouseWorld.y);
+        ctx.translate(ghost.pos.x, ghost.pos.y);
         ctx.globalAlpha = 0.6;
         ctx.fillStyle = cat.defaultColor;
         ctx.fillRect(-cat.defaultWidth / 2, -cat.defaultDepth / 2, cat.defaultWidth, cat.defaultDepth);
@@ -1202,74 +1220,55 @@ export const EditorCanvas2D: React.FC = () => {
         ctx.lineWidth = 16;
         ctx.strokeRect(-cat.defaultWidth / 2, -cat.defaultDepth / 2, cat.defaultWidth, cat.defaultDepth);
         ctx.restore();
+        drawSnapGuides(ctx, ghost.guides);
       }
     }
 
-    // 5. Ghost opening (door/window) preview snapped to nearest wall
+    // 3. Ghost opening (door/window) preview snapped to the nearest wall, with its real size
     if (activeTool === 'place_opening' && pendingOpeningType) {
-      let nearestWall: Wall | null = null;
-      let minDistance = 3000;
-      let snapProj = { point: currentMouseWorld, t: 0, distance: Infinity };
+      const plan = planOpeningPlacement(project.walls, pendingOpeningType, currentMouseWorld);
+      const def = OPENING_CATALOG.find((o) => o.type === pendingOpeningType);
+      if (plan && def) {
+        drawOpening(ctx, { id: 'ghost-opening', ...plan.opening }, plan.wall, true);
 
-      for (const wall of project.walls) {
-        const proj = projectPointOnSegment(currentMouseWorld, wall.start, wall.end);
-        if (proj.distance < minDistance) {
-          minDistance = proj.distance;
-          nearestWall = wall;
-          snapProj = proj;
-        }
-      }
-
-      if (nearestWall) {
-        const wallLen = distance(nearestWall.start, nearestWall.end);
-        const isDoor = pendingOpeningType.includes('door') || pendingOpeningType === 'passage';
-        const opW = isDoor ? 800 : 1200;
-        const halfW = opW / 2;
-        const clampedDist = Math.max(halfW + 50, Math.min(wallLen - halfW - 50, snapProj.t * wallLen));
-
-        const ghostOpening: Opening = {
-          id: 'ghost-opening',
-          wallId: nearestWall.id,
-          type: pendingOpeningType,
-          distanceAlongWall: clampedDist,
-          width: opW,
-          height: isDoor ? 2050 : 1200,
-          elevation: isDoor ? 0 : 900,
-          flipSide: false,
-          flipDirection: false,
-        };
-
-        drawOpening(ctx, ghostOpening, nearestWall, true);
-
-        // Dashed guide line from cursor to snapped position
+        const px = 1 / zoom;
         ctx.save();
+        // Dashed guide from the cursor to its position on the wall
         ctx.strokeStyle = '#0284c7';
-        ctx.lineWidth = 10;
-        ctx.setLineDash([30, 20]);
+        ctx.lineWidth = 1.5 * px;
+        ctx.setLineDash([6 * px, 4 * px]);
         ctx.beginPath();
         ctx.moveTo(currentMouseWorld.x, currentMouseWorld.y);
-        ctx.lineTo(snapProj.point.x, snapProj.point.y);
+        ctx.lineTo(plan.anchor.x, plan.anchor.y);
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Interactive Snapped Guide Badge
-        const badgeText = `Haz clic para insertar ${isDoor ? 'puerta' : 'ventana'} (${Math.round(clampedDist)} mm)`;
-        ctx.font = 'bold 100px Inter, sans-serif';
-        const tw = ctx.measureText(badgeText).width;
+        // Badge
+        const badge = `Clic para colocar: ${def.name} (${plan.opening.distanceAlongWall} mm)`;
+        ctx.font = `700 ${12 * px}px Inter, sans-serif`;
+        const tw = ctx.measureText(badge).width;
         ctx.fillStyle = '#0284c7';
         ctx.beginPath();
-        ctx.roundRect(snapProj.point.x - tw / 2 - 30, snapProj.point.y - 180, tw + 60, 140, 25);
+        ctx.roundRect(plan.anchor.x - tw / 2 - 8 * px, plan.anchor.y - 40 * px, tw + 16 * px, 22 * px, 5 * px);
         ctx.fill();
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(badgeText, snapProj.point.x, snapProj.point.y - 110);
+        ctx.fillText(badge, plan.anchor.x, plan.anchor.y - 29 * px);
         ctx.restore();
       }
     }
   }
 
   // ================= MOUSE & INTERACTION EVENT HANDLERS =================
+
+  /** Magnetises a piece of the given size, centred at `at`, to other pieces / wall faces. */
+  const snapGhost = (width: number, depth: number, at: Point2D, disabled: boolean): { pos: Point2D; guides: SnapGuide[] } => {
+    if (!project.snapEnabled || disabled) return { pos: at, guides: [] };
+    const rect = rectOfBox({ x: at.x, y: at.y, width, depth, rotation: 0 });
+    const r = snapRect(rect, collectSnapLines(project, new Set()), OBJECT_SNAP_PX / zoom);
+    return { pos: { x: at.x + r.dx, y: at.y + r.dy }, guides: r.guides };
+  };
 
   /**
    * Handle of the selected object under `world`, if any (closest within the on-screen
@@ -1382,14 +1381,25 @@ export const EditorCanvas2D: React.FC = () => {
     return true;
   };
 
+  /**
+   * Forget what a previous move gesture grabbed. These snapshots drive the move branch of mousemove, so a
+   * stale one (e.g. a room that was only *clicked*) would drag along with the next gesture.
+   */
+  const clearMoveSnapshots = () => {
+    setInitialItemTransforms(new Map());
+    setInitialRoomPoints(new Map());
+    setInitialWallEndpoints(new Map());
+  };
+
   /** Ends any move / rotate / handle drag, committing it as ONE undo step. */
   const endDrag = () => {
     if (dragMode !== 'none') {
       pushHistorySnapshot();
       setDragMode('none');
-      setInitialItemTransforms(new Map());
+      clearMoveSnapshots();
       setHandleDrag(null);
     }
+    setSnapGuides([]);
     pressOrigin.current = null;
     dragStarted.current = false;
     dragSnapTargets.current = null;
@@ -1398,6 +1408,9 @@ export const EditorCanvas2D: React.FC = () => {
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
+
+    // Close any pending keyboard / inspector edit as its own undo step before starting a gesture.
+    pushHistorySnapshot();
 
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
@@ -1413,68 +1426,13 @@ export const EditorCanvas2D: React.FC = () => {
       return;
     }
 
-    // Tool: Measure Distance
+    // Tool: Measure distance. 1st click = start, 2nd click = end (stays on screen), 3rd click = new measurement.
     if (activeTool === 'measure_distance') {
-      if (!measureStart) {
+      if (!measureStart || measureEnd) {
         setMeasureStart(world);
-      } else {
-        const len = distance(measureStart, world);
-        if (len > 50) {
-          addManualDimension({
-            id: newId('dim'),
-            start: measureStart,
-            end: world,
-            offset: 200,
-            label: formatMeasurement(len, project.unit),
-          });
-        }
-        setMeasureStart(null);
-        setActiveTool('select');
-      }
-      return;
-    }
-
-    // Tool: Draw Wall
-    if (activeTool === 'draw_wall') {
-      if (!wallStartPoint) {
-        setWallStartPoint(world);
-      } else {
-        const len = distance(wallStartPoint, world);
-        if (len > 100) {
-          addWall({
-            id: newId('wall'),
-            start: wallStartPoint,
-            end: world,
-            thickness: 150,
-            height: 2600,
-          });
-          // Continue chain
-          setWallStartPoint(world);
-        }
-      }
-      return;
-    }
-
-    // Tool: Draw Rect Room (e.g. 4000 x 3000 mm)
-    if (activeTool === 'draw_room_rect') {
-      if (!rectRoomStart) {
-        setRectRoomStart(world);
-      } else {
-        const minX = Math.min(rectRoomStart.x, world.x);
-        const maxX = Math.max(rectRoomStart.x, world.x);
-        const minY = Math.min(rectRoomStart.y, world.y);
-        const maxY = Math.max(rectRoomStart.y, world.y);
-
-        const w = maxX - minX;
-        const h = maxY - minY;
-
-        if (w > 200 && h > 200) {
-          const { room, walls } = buildRectRoom(minX, minY, maxX, maxY, `Habitación ${project.rooms.length + 1}`);
-          addRoomWithWalls(room, walls);
-        }
-
-        setRectRoomStart(null);
-        setActiveTool('select');
+        setMeasureEnd(null);
+      } else if (distance(measureStart, world) > 1) {
+        setMeasureEnd(world);
       }
       return;
     }
@@ -1483,13 +1441,14 @@ export const EditorCanvas2D: React.FC = () => {
     if (activeTool === 'place_furniture' && pendingFurnitureCatalogId) {
       const cat = FURNITURE_CATALOG.find((c) => c.id === pendingFurnitureCatalogId);
       if (cat) {
+        const placed = snapGhost(cat.defaultWidth, cat.defaultDepth, world, e.altKey).pos;
         addFurniture({
           id: newId('f'),
           catalogId: cat.id,
           name: cat.name,
           category: cat.category,
-          x: world.x,
-          y: world.y,
+          x: placed.x,
+          y: placed.y,
           z: 0,
           width: cat.defaultWidth,
           depth: cat.defaultDepth,
@@ -1506,41 +1465,11 @@ export const EditorCanvas2D: React.FC = () => {
       return;
     }
 
-    // Tool: Place Opening on Wall
+    // Tool: Place Opening on Wall (uses the catalog's real size for the chosen type)
     if (activeTool === 'place_opening' && pendingOpeningType) {
-      // Find nearest wall within 3000 mm
-      let nearestWall: Wall | null = null;
-      let minDistance = 3000;
-      let snapProj = { point: world, t: 0, distance: Infinity };
-
-      for (const wall of project.walls) {
-        const proj = projectPointOnSegment(world, wall.start, wall.end);
-        if (proj.distance < minDistance) {
-          minDistance = proj.distance;
-          nearestWall = wall;
-          snapProj = proj;
-        }
-      }
-
-      if (nearestWall) {
-        const wallLen = distance(nearestWall.start, nearestWall.end);
-        const isDoor = pendingOpeningType.includes('door') || pendingOpeningType === 'passage';
-        const opW = isDoor ? 800 : 1200;
-        const halfW = opW / 2;
-        const clampedDist = Math.max(halfW + 50, Math.min(wallLen - halfW - 50, snapProj.t * wallLen));
-
-        const newOp: Opening = {
-          id: newId('op'),
-          wallId: nearestWall.id,
-          type: pendingOpeningType,
-          distanceAlongWall: Math.round(clampedDist),
-          width: opW,
-          height: isDoor ? 2050 : 1200,
-          elevation: isDoor ? 0 : 900,
-          flipSide: false,
-          flipDirection: false,
-        };
-
+      const plan = planOpeningPlacement(project.walls, pendingOpeningType, world);
+      if (plan) {
+        const newOp: Opening = { id: newId('op'), ...plan.opening };
         addOpening(newOp);
         selectObject(newOp.id);
         setPendingOpeningType(null);
@@ -1558,7 +1487,7 @@ export const EditorCanvas2D: React.FC = () => {
       for (const dim of activeDynamicDims) {
         const midX = (dim.start.x + dim.end.x) / 2;
         const midY = (dim.start.y + dim.end.y) / 2;
-        if (distance(rawWorld, { x: midX, y: midY }) < 180) {
+        if (distance(rawWorld, { x: midX, y: midY }) < Math.max(180, 24 / zoom)) {
           setDimensionEditTarget(dim);
           return;
         }
@@ -1607,106 +1536,76 @@ export const EditorCanvas2D: React.FC = () => {
         return;
       }
 
-      // Hit-test Furniture (in reverse order for topmost)
-      for (let i = project.furniture.length - 1; i >= 0; i--) {
-        const f = project.furniture[i];
-        const hw = f.width / 2;
-        const hd = f.depth / 2;
-        // Transform click to local item space
-        const dx = rawWorld.x - f.x;
-        const dy = rawWorld.y - f.y;
-        const rad = (-f.rotation * Math.PI) / 180;
-        const localX = dx * Math.cos(rad) - dy * Math.sin(rad);
-        const localY = dx * Math.sin(rad) + dy * Math.cos(rad);
+      // What is under the cursor? (layer-aware, see hitTest.ts)
+      const hit = hitTest(project, rawWorld, { zoom, selectedIds });
+      if (hit) {
+        const isMulti = e.shiftKey || e.ctrlKey || e.metaKey;
+        const alreadySelected = selectedIds.includes(hit.id);
 
-        if (Math.abs(localX) <= hw && Math.abs(localY) <= hd) {
-          const isMulti = e.shiftKey || e.ctrlKey || e.metaKey;
-          selectObject(f.id, isMulti);
+        if (hit.type === 'furniture') {
+          // Shift/Ctrl-click toggles; if that deselects the piece there is nothing to drag.
+          if (isMulti && alreadySelected) {
+            selectObject(hit.id, true);
+            return;
+          }
 
-          // Initiate move drag
+          // Pressing a piece that belongs to a multi-selection keeps the group (so it can be dragged
+          // together); the selection collapses to this piece only if the press ends without a drag.
+          const keepGroup = !isMulti && alreadySelected && selectedIds.length > 1;
+          if (keepGroup) collapseTo.current = hit.id;
+          else selectObject(hit.id, isMulti);
+
+          const movingIds = keepGroup ? selectedIds : isMulti ? [...selectedIds, hit.id] : [hit.id];
+          const initialMap = new Map();
+          for (const item of project.furniture) {
+            if (movingIds.includes(item.id)) {
+              initialMap.set(item.id, { x: item.x, y: item.y, rotation: item.rotation, width: item.width, depth: item.depth });
+            }
+          }
           setDragMode('move');
           setDragStartWorld(world);
           setLastDragWorld(world);
-
-          const initialMap = new Map();
-          const targetIds = isMulti && selectedIds.includes(f.id) ? selectedIds : [f.id];
-          for (const tid of targetIds) {
-            const item = project.furniture.find((x) => x.id === tid);
-            if (item) {
-              initialMap.set(item.id, {
-                x: item.x,
-                y: item.y,
-                rotation: item.rotation,
-                width: item.width,
-                depth: item.depth,
-              });
-            }
-          }
+          clearMoveSnapshots();
           setInitialItemTransforms(initialMap);
           return;
         }
-      }
 
-      // Hit-test Openings
-      for (const op of project.openings) {
-        const wall = project.walls.find((w) => w.id === op.wallId);
-        if (wall) {
-          const wallLen = distance(wall.start, wall.end);
-          const t = op.distanceAlongWall / wallLen;
-          const opCenter = {
-            x: wall.start.x + (wall.end.x - wall.start.x) * t,
-            y: wall.start.y + (wall.end.y - wall.start.y) * t,
-          };
-          if (distance(rawWorld, opCenter) < op.width / 2 + 100) {
-            const isMulti = e.shiftKey || e.ctrlKey || e.metaKey;
-            selectObject(op.id, isMulti);
-            if (!isMulti) {
-              // Dragging an opening slides it along its wall
-              const s = projectPointOnSegment(rawWorld, wall.start, wall.end).t * wallLen;
-              handleGrab.current = { x: 0, y: 0 };
-              setHandleDrag({ kind: 'opening_move', id: op.id, grab: s - op.distanceAlongWall });
-              setDragMode('resize');
-            }
-            return;
+        if (hit.type === 'opening') {
+          selectObject(hit.id, isMulti);
+          const op = project.openings.find((o) => o.id === hit.id);
+          const wall = op && project.walls.find((w) => w.id === op.wallId);
+          if (op && wall && !isMulti) {
+            // Dragging an opening slides it along its wall
+            const s = projectPointOnSegment(rawWorld, wall.start, wall.end).t * distance(wall.start, wall.end);
+            handleGrab.current = { x: 0, y: 0 };
+            setHandleDrag({ kind: 'opening_move', id: op.id, grab: s - op.distanceAlongWall });
+            setDragMode('resize');
           }
+          return;
         }
-      }
 
-      // Hit-test Walls
-      for (const wall of project.walls) {
-        const proj = projectPointOnSegment(rawWorld, wall.start, wall.end);
-        if (proj.distance <= wall.thickness / 2 + 50) {
-          const isMulti = e.shiftKey || e.ctrlKey || e.metaKey;
-          selectObject(wall.id, isMulti);
-
+        if (hit.type === 'wall') {
+          const wall = project.walls.find((w) => w.id === hit.id)!;
+          selectObject(hit.id, isMulti);
           setDragMode('move');
           setDragStartWorld(world);
           setLastDragWorld(world);
           setInitialItemTransforms(new Map());
           setInitialRoomPoints(new Map());
-          const wMap = new Map();
-          wMap.set(wall.id, { start: { ...wall.start }, end: { ...wall.end } });
-          setInitialWallEndpoints(wMap);
+          setInitialWallEndpoints(new Map([[wall.id, { start: { ...wall.start }, end: { ...wall.end } }]]));
           return;
         }
-      }
 
-      // Hit-test Rooms (using isPointInsidePolygon)
-      for (const room of project.rooms) {
-        if (isPointInsidePolygon(rawWorld, room.points)) {
-          const isMulti = e.shiftKey || e.ctrlKey || e.metaKey;
-          selectObject(room.id, isMulti);
-
-          setDragMode('move');
-          setDragStartWorld(world);
-          setLastDragWorld(world);
-          setInitialItemTransforms(new Map());
-          setInitialWallEndpoints(new Map());
-          const rMap = new Map();
-          rMap.set(room.id, [...room.points]);
-          setInitialRoomPoints(rMap);
-          return;
-        }
+        // room
+        const room = project.rooms.find((r) => r.id === hit.id)!;
+        selectObject(hit.id, isMulti);
+        setDragMode('move');
+        setDragStartWorld(world);
+        setLastDragWorld(world);
+        setInitialItemTransforms(new Map());
+        setInitialWallEndpoints(new Map());
+        setInitialRoomPoints(new Map([[room.id, [...room.points]]]));
+        return;
       }
 
       // Empty space clicked -> clear selection
@@ -1728,6 +1627,7 @@ export const EditorCanvas2D: React.FC = () => {
 
     setCursorWorldPos(world);
     setCurrentMouseWorld(world);
+    setAltHeld(e.altKey);
 
     // Pan canvas
     if (isPanning) {
@@ -1762,12 +1662,37 @@ export const EditorCanvas2D: React.FC = () => {
       if (dx !== 0 || dy !== 0) {
         // Absolute from the position at drag start: no stale `project` and no
         // rounding drift accumulating on every mouse event.
-        initialItemTransforms.forEach((init, id) => {
-          updateFurniture(id, {
-            x: Math.round(init.x + (world.x - dragStartWorld.x)),
-            y: Math.round(init.y + (world.y - dragStartWorld.y)),
-          });
-        });
+        if (initialItemTransforms.size > 0) {
+          const proposed = [...initialItemTransforms].map(([id, init]) => ({
+            id,
+            init,
+            x: init.x + (world.x - dragStartWorld.x),
+            y: init.y + (world.y - dragStartWorld.y),
+          }));
+
+          // Magnetism: the group's bounding box is pulled flush to nearby pieces / wall faces.
+          let shift = { x: 0, y: 0 };
+          let guides: SnapGuide[] = [];
+          if (project.snapEnabled && !e.altKey) {
+            const rects = proposed.map((p) =>
+              rectOfBox({ x: p.x, y: p.y, width: p.init.width, depth: p.init.depth, rotation: p.init.rotation })
+            );
+            const group = {
+              minX: Math.min(...rects.map((r) => r.minX)),
+              maxX: Math.max(...rects.map((r) => r.maxX)),
+              minY: Math.min(...rects.map((r) => r.minY)),
+              maxY: Math.max(...rects.map((r) => r.maxY)),
+            };
+            const snap = snapRect(group, collectSnapLines(project, new Set(initialItemTransforms.keys())), OBJECT_SNAP_PX / zoom);
+            shift = { x: snap.dx, y: snap.dy };
+            guides = snap.guides;
+          }
+          setSnapGuides(guides);
+
+          for (const p of proposed) {
+            updateFurniture(p.id, { x: Math.round(p.x + shift.x), y: Math.round(p.y + shift.y) });
+          }
+        }
 
         initialRoomPoints.forEach((_, id) => {
           moveRoom(id, dx, dy);
@@ -1806,29 +1731,15 @@ export const EditorCanvas2D: React.FC = () => {
     if (isPanning) {
       setIsPanning(false);
     }
+    if (collapseTo.current && !dragStarted.current) selectObject(collapseTo.current);
+    collapseTo.current = null;
     endDrag();
 
-    // Complete drag-to-create rectangular room
-    if (activeTool === 'draw_room_rect' && rectRoomStart) {
-      const minX = Math.min(rectRoomStart.x, currentMouseWorld.x);
-      const maxX = Math.max(rectRoomStart.x, currentMouseWorld.x);
-      const minY = Math.min(rectRoomStart.y, currentMouseWorld.y);
-      const maxY = Math.max(rectRoomStart.y, currentMouseWorld.y);
-
-      const w = maxX - minX;
-      const h = maxY - minY;
-
-      if (w > 300 && h > 300) {
-        const { room, walls } = buildRectRoom(minX, minY, maxX, maxY, `Habitación ${project.rooms.length + 1}`);
-        addRoomWithWalls(room, walls);
-        setRectRoomStart(null);
-        setActiveTool('select');
-      }
-    }
   };
 
   // Releasing the button outside the canvas would otherwise leave a drag stuck.
   const handleMouseLeave = () => {
+    collapseTo.current = null;
     setHoverCursor(null);
     setIsPanning(false);
     endDrag();
@@ -1862,22 +1773,22 @@ export const EditorCanvas2D: React.FC = () => {
     return () => canvas.removeEventListener('wheel', handleWheel);
   }, []);
 
-  // Key shortcuts (Escape to cancel drawing, Enter to finish polygon)
+  // Leaving the measure tool (by any means, incl. Esc handled in App) discards the measurement.
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setWallStartPoint(null);
-        setRectRoomStart(null);
-        setPolyRoomPoints([]);
-        setMeasureStart(null);
-        setActiveTool('select');
-        setPendingFurnitureCatalogId(null);
-        setPendingOpeningType(null);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+    if (activeTool !== 'measure_distance') {
+      setMeasureStart(null);
+      setMeasureEnd(null);
+    }
+  }, [activeTool]);
+
+  // Text of the banner while measuring: instructions, then the picked distance
+  const measureText = (() => {
+    if (!measureStart) return 'Medir: haz clic en el primer punto';
+    if (!measureEnd) return 'Haz clic en el segundo punto';
+    const d = distance(measureStart, measureEnd);
+    const u = project.unit;
+    return `Distancia: ${formatMeasurement(d, u)}  ·  ΔX ${formatMeasurement(Math.abs(measureEnd.x - measureStart.x), u)}  ·  ΔY ${formatMeasurement(Math.abs(measureEnd.y - measureStart.y), u)}  ·  clic para medir de nuevo`;
+  })();
 
   const cursor =
     dragMode === 'resize' && handleDrag
@@ -1893,11 +1804,11 @@ export const EditorCanvas2D: React.FC = () => {
     if (activeTool !== 'select' || selectedIds.length !== 1) return null;
     const id = selectedIds[0];
     if (project.furniture.some((f) => f.id === id))
-      return 'Arrastra para mover · asas para cambiar el tamaño (Shift: proporciones) · ● para girar';
+      return 'Arrastra para mover (Alt: sin imán) · flechas para ajustar · asas para el tamaño (Shift: proporciones) · ● para girar';
     const room = project.rooms.find((r) => r.id === id);
     if (room)
       return isAxisAlignedRect(room.points)
-        ? 'Arrastra para mover · asas para cambiar las dimensiones'
+        ? 'Arrastra para mover · flechas para ajustar · asas para cambiar las dimensiones'
         : 'Arrastra para mover · arrastra un vértice para deformar';
     if (project.walls.some((w) => w.id === id)) return 'Arrastra para mover · arrastra un extremo para cambiar la longitud';
     if (project.openings.some((o) => o.id === id)) return 'Arrastra para desplazar por el muro · asas laterales para cambiar el ancho';
@@ -1912,16 +1823,14 @@ export const EditorCanvas2D: React.FC = () => {
     >
       {/* Active Tool Guidance Banner */}
       {activeTool !== 'select' && activeTool !== 'pan' && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-slate-900/90 text-white px-4 py-2 rounded-xl text-xs font-semibold shadow-lg backdrop-blur-xs flex items-center gap-2 border border-slate-700 pointer-events-none">
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-slate-900/90 text-white px-4 py-2 rounded-xl text-xs font-semibold shadow-lg backdrop-blur-xs flex items-center gap-2 border border-slate-700 pointer-events-none whitespace-nowrap">
           <span className="w-2 h-2 rounded-full bg-sky-400"></span>
           <span>
-            {activeTool === 'draw_room_rect' && 'Arrastra para crear la habitación (ej. 4×3 m) o haz clic en esquinas opuestas'}
             {activeTool === 'place_opening' && `Acerca el cursor a cualquier pared para insertar ${pendingOpeningType?.replace('_', ' ')}`}
-            {activeTool === 'draw_wall' && (wallStartPoint ? 'Mueve el ratón y haz clic para fijar la pared' : 'Haz clic para comenzar el trazado de la pared')}
             {activeTool === 'place_furniture' && 'Haz clic en el plano para colocar el mueble'}
-            {activeTool === 'measure_distance' && (measureStart ? 'Haz clic en el segundo punto a medir' : 'Haz clic en el primer punto de medición')}
+            {activeTool === 'measure_distance' && measureText}
           </span>
-          <span className="text-slate-400 font-normal ml-1">· Esc para cancelar</span>
+          <span className="text-slate-400 font-normal ml-1">· Esc para salir</span>
         </div>
       )}
 

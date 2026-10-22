@@ -71,6 +71,12 @@ Selecciona cualquier elemento con un clic y manipúlalo con el ratón (el panel 
 | Muro | Arrastrar el cuerpo | Arrastrar un extremo (las puertas/ventanas se recolocan dentro del muro) |
 | Puerta / ventana | Arrastrar: se desliza por su muro | Asas laterales para cambiar el ancho |
 
+**Teclado:** con un objeto seleccionado, las flechas lo mueven 10 mm (**Shift** = una celda de rejilla, **Alt** = 1 mm). Las pulsaciones seguidas cuentan como un solo paso de deshacer.
+
+**Imán de objetos:** al arrastrar un mueble (o colocarlo desde el catálogo) sus bordes se pegan a las caras de los muros y a los bordes/centros de otras piezas, con guías magenta. El alcance es constante en pantalla (8 px): ampliando el zoom puedes acercarlos tanto como quieras. **Alt** desactiva el imán; el botón *Snap* lo activa/desactiva globalmente. La rejilla del cursor también se afina al hacer zoom.
+
+**Medir:** dos clics dan la distancia entre dos puntos (y ΔX/ΔY); el resultado queda visible hasta la siguiente medición. **Esc** sale de la herramienta.
+
 Cada gesto es **un único paso** de deshacer. Un simple clic nunca desplaza el objeto (hay un umbral de arrastre de 4 px).
 
 ## Estructura del Código

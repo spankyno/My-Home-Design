@@ -211,9 +211,6 @@ export interface Project extends ProjectMetadata {
 export type ActiveTool =
   | 'select'
   | 'pan'
-  | 'draw_wall'
-  | 'draw_room_rect'
-  | 'draw_room_poly'
   | 'place_opening'
   | 'place_furniture'
   | 'measure_distance';

@@ -18,12 +18,21 @@ import {
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useEditorStore } from '../state/useEditorStore';
-import { ActiveTool, FurnitureCategory, OpeningType, Wall } from '../types';
-import { FURNITURE_CATALOG, CATEGORY_LABELS } from '../catalog';
-import { distance, convertToMm, buildRectRoom } from '../geometry';
+import { ActiveTool, FurnitureCategory, OpeningType } from '../types';
+import { FURNITURE_CATALOG, OPENING_CATALOG, CATEGORY_LABELS } from '../catalog';
+import { convertToMm, buildRectRoom } from '../geometry';
 import { newId } from '../utils/id';
 
 type SidebarTab = 'tools' | 'furniture' | 'openings' | 'parametric' | 'layers';
+
+const OPENING_ICONS: Record<OpeningType, React.ElementType> = {
+  door: DoorOpen,
+  double_door: DoorOpen,
+  sliding_door: DoorOpen,
+  window: AppWindow,
+  french_window: AppWindow,
+  passage: Square,
+};
 
 export const ToolSidebar: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
@@ -35,7 +44,6 @@ export const ToolSidebar: React.FC = () => {
     activeTool,
     pendingFurnitureCatalogId,
     pendingOpeningType,
-    selectedIds,
     project,
     setActiveTool,
     setPendingFurnitureCatalogId,
@@ -44,15 +52,12 @@ export const ToolSidebar: React.FC = () => {
     addFurniture,
     addWall,
     addRoomWithWalls,
-    addOpening,
-    selectObject
   } = useEditorStore(
     useShallow((s) => ({
       toggleLayer: s.toggleLayer,
       activeTool: s.activeTool,
       pendingFurnitureCatalogId: s.pendingFurnitureCatalogId,
       pendingOpeningType: s.pendingOpeningType,
-      selectedIds: s.selectedIds,
       project: s.project,
       setActiveTool: s.setActiveTool,
       setPendingFurnitureCatalogId: s.setPendingFurnitureCatalogId,
@@ -61,8 +66,6 @@ export const ToolSidebar: React.FC = () => {
       addFurniture: s.addFurniture,
       addWall: s.addWall,
       addRoomWithWalls: s.addRoomWithWalls,
-      addOpening: s.addOpening,
-      selectObject: s.selectObject,
     }))
   );
 
@@ -71,13 +74,8 @@ export const ToolSidebar: React.FC = () => {
   const [customRoomHeight, setCustomRoomHeight] = useState<number>(unit === 'm' ? 3.5 : unit === 'cm' ? 350 : 3500);
   const [customWallLen, setCustomWallLen] = useState<number>(unit === 'm' ? 3.0 : unit === 'cm' ? 300 : 3000);
   const [customWallDir, setCustomWallDir] = useState<'h' | 'v'>('h');
-  const [openingNotice, setOpeningNotice] = useState<string | null>(null);
 
-  const handleSelectTool = (tool: ActiveTool) => {
-    setActiveTool(tool);
-    setPendingFurnitureCatalogId(null);
-    setPendingOpeningType(null);
-  };
+  const handleSelectTool = (tool: ActiveTool) => setActiveTool(tool);
 
   const handleSelectOpening = (type: OpeningType) => {
     setPendingOpeningType(type);
@@ -298,19 +296,6 @@ export const ToolSidebar: React.FC = () => {
                       >
                         + Crear Habitación
                       </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleSelectTool('draw_room_rect')}
-                        title="Trazar haciendo clic y arrastrando sobre el lienzo"
-                        className={`py-1.5 px-2.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
-                          activeTool === 'draw_room_rect'
-                            ? 'bg-sky-50 border-sky-400 text-sky-800'
-                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                        }`}
-                      >
-                        📐 Trazar
-                      </button>
                     </div>
                   </div>
 
@@ -373,23 +358,10 @@ export const ToolSidebar: React.FC = () => {
                       >
                         + Insertar Pared
                       </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleSelectTool('draw_wall')}
-                        title="Trazar pared continua haciendo clic en el plano"
-                        className={`py-1.5 px-2.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
-                          activeTool === 'draw_wall'
-                            ? 'bg-sky-50 border-sky-400 text-sky-800'
-                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                        }`}
-                      >
-                        ✏️ Trazar
-                      </button>
                     </div>
                   </div>
 
-                  {/* Option 4: Measure distance */}
+                  {/* Option 4: Measure distance between two points */}
                   <button
                     onClick={() => handleSelectTool('measure_distance')}
                     className={`w-full p-2.5 rounded-xl border text-left text-xs font-medium flex items-center gap-2.5 transition-all cursor-pointer ${
@@ -400,8 +372,8 @@ export const ToolSidebar: React.FC = () => {
                   >
                     <Ruler className="w-4 h-4 text-amber-600" />
                     <div>
-                      <div className="font-semibold">Cota Manual</div>
-                      <div className="text-[10px] text-slate-500">Mide entre dos puntos del plano</div>
+                      <div className="font-semibold">Medir</div>
+                      <div className="text-[10px] text-slate-500">Distancia entre dos puntos del plano</div>
                     </div>
                   </button>
                 </div>
@@ -410,8 +382,10 @@ export const ToolSidebar: React.FC = () => {
               <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 text-[11px] text-slate-600 space-y-1">
                 <div className="font-semibold text-slate-800">Consejos de precisión CAD:</div>
                 <div>• Pulsa <kbd className="px-1 py-0.5 bg-white border rounded">Shift</kbd> para selección múltiple.</div>
-                <div>• Pulsa <kbd className="px-1 py-0.5 bg-white border rounded">Esc</kbd> para cancelar el dibujo actual.</div>
+                <div>• Pulsa <kbd className="px-1 py-0.5 bg-white border rounded">Esc</kbd> para salir de la herramienta activa.</div>
                 <div>• Haz clic en una cota azul para introducir la distancia exacta deseada.</div>
+                <div>• Con un objeto seleccionado, las <kbd className="px-1 py-0.5 bg-white border rounded">flechas</kbd> lo mueven 10 mm (<kbd className="px-1 py-0.5 bg-white border rounded">Shift</kbd> una celda de rejilla, <kbd className="px-1 py-0.5 bg-white border rounded">Alt</kbd> 1 mm).</div>
+                <div>• Mantén <kbd className="px-1 py-0.5 bg-white border rounded">Alt</kbd> al arrastrar para desactivar el imán.</div>
               </div>
             </div>
           )}
@@ -507,12 +481,6 @@ export const ToolSidebar: React.FC = () => {
                 Inserta directamente en cualquier pared del plano o activa el puntero para colocarla con el ratón.
               </p>
 
-              {openingNotice && (
-                <div className="bg-emerald-50 border border-emerald-300 p-2.5 rounded-xl text-xs text-emerald-800 font-semibold flex items-center gap-2 shadow-xs transition-all">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
-                  <span>{openingNotice}</span>
-                </div>
-              )}
 
               {pendingOpeningType && (
                 <div className="bg-sky-50 border border-sky-300 p-2.5 rounded-xl text-xs text-sky-800 font-medium flex items-center gap-2 shadow-xs">
@@ -521,16 +489,9 @@ export const ToolSidebar: React.FC = () => {
                 </div>
               )}
 
-              {[
-                { type: 'door' as const, name: 'Puerta Batiente', desc: '800 × 2050 mm con arco', width: 800, height: 2050, elev: 0, icon: DoorOpen },
-                { type: 'double_door' as const, name: 'Puerta Doble', desc: '1400 × 2050 mm de 2 hojas', width: 1400, height: 2050, elev: 0, icon: DoorOpen },
-                { type: 'sliding_door' as const, name: 'Puerta Corredera', desc: '900 × 2050 mm empotrada', width: 900, height: 2050, elev: 0, icon: DoorOpen },
-                { type: 'window' as const, name: 'Ventana Estándar', desc: '1200 × 1200 mm (antepecho 900)', width: 1200, height: 1200, elev: 900, icon: AppWindow },
-                { type: 'french_window' as const, name: 'Balconera / Ventanal', desc: '1600 × 2100 mm a suelo', width: 1600, height: 2100, elev: 0, icon: AppWindow },
-                { type: 'passage' as const, name: 'Hueco de Paso', desc: '900 × 2100 mm sin hoja', width: 900, height: 2100, elev: 0, icon: Square },
-              ].map((op) => {
+              {OPENING_CATALOG.map((op) => {
                 const isPending = pendingOpeningType === op.type;
-                const Icon = op.icon;
+                const Icon = OPENING_ICONS[op.type];
                 return (
                   <div
                     key={op.type}
@@ -550,56 +511,7 @@ export const ToolSidebar: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="mt-2.5 flex items-center justify-between gap-1.5 pt-2 border-t border-slate-100">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          // Find wall: either currently selected wall or first wall
-                          let targetWall = project.walls.find((w) => selectedIds.includes(w.id));
-                          if (!targetWall && project.walls.length > 0) {
-                            targetWall = project.walls[0];
-                          }
-
-                          // If no wall exists in the project at all, automatically create one so the user can see the door!
-                          if (!targetWall) {
-                            const newWall: Wall = {
-                              id: newId('wall'),
-                              start: { x: 1000, y: 2000 },
-                              end: { x: 5000, y: 2000 },
-                              thickness: 150,
-                              height: 2600,
-                            };
-                            addWall(newWall);
-                            targetWall = newWall;
-                          }
-
-                          const wallLen = distance(targetWall.start, targetWall.end);
-                          const halfW = op.width / 2;
-                          const dist = Math.max(halfW + 50, Math.min(wallLen - halfW - 50, wallLen / 2));
-
-                          const newOp = {
-                            id: newId('op'),
-                            wallId: targetWall.id,
-                            type: op.type,
-                            distanceAlongWall: Math.round(dist),
-                            width: op.width,
-                            height: op.height,
-                            elevation: op.elev,
-                            flipSide: false,
-                            flipDirection: false,
-                          };
-
-                          addOpening(newOp);
-                          selectObject(newOp.id);
-                          setOpeningNotice(`¡${op.name} insertada en la pared!`);
-                          setTimeout(() => setOpeningNotice(null), 3000);
-                        }}
-                        className="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-bold text-[11px] transition-colors cursor-pointer shadow-2xs"
-                        title="Insertar en la pared seleccionada o primera disponible"
-                      >
-                        + En pared
-                      </button>
-
+                    <div className="mt-2.5 flex items-center justify-end pt-2 border-t border-slate-100">
                       <button
                         type="button"
                         onClick={() => handleSelectOpening(op.type)}
@@ -608,9 +520,9 @@ export const ToolSidebar: React.FC = () => {
                             ? 'bg-sky-100 text-sky-800 border-sky-300 font-bold'
                             : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
                         }`}
-                        title="Activar puntero para hacer clic sobre cualquier pared del plano"
+                        title="Haz clic en una pared del plano para colocarla"
                       >
-                        {isPending ? 'Colocando...' : '✏️ Colocar'}
+                        {isPending ? 'Colocando...' : 'Colocar'}
                       </button>
                     </div>
                   </div>

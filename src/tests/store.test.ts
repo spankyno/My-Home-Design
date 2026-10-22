@@ -183,3 +183,65 @@ describe('edición directa: aberturas', () => {
     expect(moved.distanceAlongWall + moved.width / 2).toBeLessThanOrEqual(len + 1);
   });
 });
+
+describe('herramientas', () => {
+  const s = () => useEditorStore.getState();
+
+  it.each(['pan', 'measure_distance', 'select'] as const)('activar "%s" no se revierte a select', (tool) => {
+    s().setActiveTool(tool);
+    // Lo que hacía el botón de la barra lateral: limpiar los pendientes tras elegir la herramienta.
+    s().setPendingFurnitureCatalogId(null);
+    s().setPendingOpeningType(null);
+    expect(s().activeTool).toBe(tool);
+  });
+
+  it('elegir una herramienta descarta lo pendiente de otra', () => {
+    s().setPendingFurnitureCatalogId('sofa');
+    expect(s().activeTool).toBe('place_furniture');
+    s().setActiveTool('pan');
+    expect(s().pendingFurnitureCatalogId).toBeNull();
+    s().setPendingOpeningType('door');
+    expect(s().activeTool).toBe('place_opening');
+    s().setPendingFurnitureCatalogId('x');
+    expect(s().pendingOpeningType).toBeNull();
+    s().setPendingFurnitureCatalogId(null);
+    expect(s().activeTool).toBe('select');
+  });
+});
+
+describe('mover la selección con el teclado', () => {
+  const s = () => useEditorStore.getState();
+
+  it('mueve muebles seleccionados y es un único paso al confirmar', () => {
+    const f0 = s().project.furniture.find((f) => f.id === 'f-sofa')!;
+    s().setSelectedIds(['f-sofa']);
+    for (let i = 0; i < 5; i++) s().moveSelected(10, 0);
+    s().pushHistorySnapshot();
+    expect(s().project.furniture.find((f) => f.id === 'f-sofa')!.x).toBe(f0.x + 50);
+    s().undo();
+    expect(s().project.furniture.find((f) => f.id === 'f-sofa')!.x).toBe(f0.x);
+  });
+
+  it('mueve una habitación junto con sus muros, una sola vez', () => {
+    const room = s().project.rooms[0];
+    const wallsBefore = s().project.walls;
+    s().setSelectedIds([room.id]);
+    s().moveSelected(0, 100);
+    expect(s().project.rooms[0].points.map((p) => p.y)).toEqual(room.points.map((p) => p.y + 100));
+    const w1 = s().project.walls.find((w) => w.id === 'w1')!;
+    expect(w1.start.y).toBe(wallsBefore.find((w) => w.id === 'w1')!.start.y + 100);
+  });
+
+  it('desliza una abertura a lo largo de su muro sin salirse', () => {
+    const op = s().project.openings[0];
+    const wall = s().project.walls.find((w) => w.id === op.wallId)!;
+    const ux = Math.sign(wall.end.x - wall.start.x);
+    s().setSelectedIds([op.id]);
+    s().moveSelected(ux * 50, 0);
+    expect(s().project.openings.find((o) => o.id === op.id)!.distanceAlongWall).toBe(op.distanceAlongWall + 50);
+    s().moveSelected(ux * 99999, 0);
+    const len = Math.hypot(wall.end.x - wall.start.x, wall.end.y - wall.start.y);
+    const moved = s().project.openings.find((o) => o.id === op.id)!;
+    expect(moved.distanceAlongWall + moved.width / 2).toBeLessThanOrEqual(len);
+  });
+});

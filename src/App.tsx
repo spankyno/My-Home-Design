@@ -14,6 +14,14 @@ import { ExportModal } from './components/ExportModal';
 import { DimensionEditModal } from './components/DimensionEditModal';
 
 const AUTOSAVE_DELAY_MS = 1500;
+/** Arrow-key nudges less than this many ms apart (taps or key-repeat) count as one undo step. */
+const NUDGE_COMMIT_MS = 500;
+const ARROWS: Record<string, [number, number]> = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1],
+};
 
 /** True when the key event comes from a control where typing must not trigger shortcuts. */
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -32,6 +40,8 @@ export const App: React.FC = () => {
     redo,
     deleteSelected,
     duplicateSelected,
+    moveSelected,
+    pushHistorySnapshot,
     clearSelection,
     setActiveTool,
   } = useEditorStore(
@@ -45,6 +55,8 @@ export const App: React.FC = () => {
       redo: s.redo,
       deleteSelected: s.deleteSelected,
       duplicateSelected: s.duplicateSelected,
+      moveSelected: s.moveSelected,
+      pushHistorySnapshot: s.pushHistorySnapshot,
       clearSelection: s.clearSelection,
       setActiveTool: s.setActiveTool,
     }))
@@ -85,11 +97,26 @@ export const App: React.FC = () => {
 
   // Global Keyboard Shortcuts
   useEffect(() => {
+    let nudgeTimer: ReturnType<typeof setTimeout> | undefined;
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isTypingTarget(e.target)) return;
 
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
+
+      // Arrow keys nudge the selection in the plan: 10 mm, Shift = one grid cell, Alt = 1 mm.
+      const arrow = ARROWS[e.key];
+      if (arrow && !mod) {
+        const { selectedIds, viewMode: mode, project: current } = useEditorStore.getState();
+        if (mode !== '2d' || selectedIds.length === 0) return;
+        e.preventDefault();
+        const step = e.altKey ? 1 : e.shiftKey ? current.gridSize : 10;
+        moveSelected(arrow[0] * step, arrow[1] * step);
+        clearTimeout(nudgeTimer);
+        nudgeTimer = setTimeout(pushHistorySnapshot, NUDGE_COMMIT_MS);
+        return;
+      }
 
       if (mod && key === 'z') {
         e.preventDefault();
@@ -114,8 +141,21 @@ export const App: React.FC = () => {
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [undo, redo, saveCurrentProject, duplicateSelected, deleteSelected, clearSelection, setActiveTool]);
+    return () => {
+      clearTimeout(nudgeTimer);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [
+    undo,
+    redo,
+    saveCurrentProject,
+    duplicateSelected,
+    deleteSelected,
+    moveSelected,
+    pushHistorySnapshot,
+    clearSelection,
+    setActiveTool,
+  ]);
 
   return (
     <div className="w-screen h-screen flex flex-col bg-slate-100 overflow-hidden font-sans text-slate-800 antialiased select-none">

@@ -19,7 +19,7 @@ import {
   saveProject,
   setLastActiveProjectId,
 } from '../storage';
-import { clampOpeningsToWalls, distance, getBoundingBox, getRotatedCorners } from '../geometry';
+import { clampOpeningCentre, clampOpeningsToWalls, distance, getBoundingBox, getRotatedCorners } from '../geometry';
 import { newId } from '../utils/id';
 
 interface EditorState {
@@ -88,6 +88,8 @@ interface EditorState {
   setHoveredId: (id: string | null) => void;
 
   deleteSelected: () => void;
+  /** Moves the selection by (dx, dy) mm without recording history (commit with pushHistorySnapshot). */
+  moveSelected: (dx: number, dy: number) => void;
   duplicateSelected: () => void;
 
   // Walls & Rooms
@@ -324,11 +326,27 @@ export const useEditorStore = create<EditorState>((set, get) => {
     // ----- View / tool state -------------------------------------------------
 
     setViewMode: (mode) => set({ viewMode: mode }),
-    setActiveTool: (tool) => set({ activeTool: tool }),
+    // Choosing a tool drops any pending "place" payload that belongs to another tool.
+    setActiveTool: (tool) =>
+      set((s) => ({
+        activeTool: tool,
+        pendingFurnitureCatalogId: tool === 'place_furniture' ? s.pendingFurnitureCatalogId : null,
+        pendingOpeningType: tool === 'place_opening' ? s.pendingOpeningType : null,
+      })),
+    // Setting a pending item activates its placement tool; clearing it only leaves that
+    // tool (it must NOT reset whatever other tool is active, e.g. pan or measure).
     setPendingFurnitureCatalogId: (id) =>
-      set({ pendingFurnitureCatalogId: id, activeTool: id ? 'place_furniture' : 'select' }),
+      set((s) => ({
+        pendingFurnitureCatalogId: id,
+        pendingOpeningType: id ? null : s.pendingOpeningType,
+        activeTool: id ? 'place_furniture' : s.activeTool === 'place_furniture' ? 'select' : s.activeTool,
+      })),
     setPendingOpeningType: (type) =>
-      set({ pendingOpeningType: type, activeTool: type ? 'place_opening' : 'select' }),
+      set((s) => ({
+        pendingOpeningType: type,
+        pendingFurnitureCatalogId: type ? null : s.pendingFurnitureCatalogId,
+        activeTool: type ? 'place_opening' : s.activeTool === 'place_opening' ? 'select' : s.activeTool,
+      })),
 
     // Display preferences: persisted with the project but not undoable.
     setUnit: (unit) => set((s) => ({ project: { ...s.project, unit }, isDirty: true })),
@@ -378,6 +396,45 @@ export const useEditorStore = create<EditorState>((set, get) => {
         }),
         { selectedIds: [] }
       );
+    },
+
+    moveSelected: (dx, dy) => {
+      const { selectedIds, project } = get();
+      if (selectedIds.length === 0 || (dx === 0 && dy === 0)) return;
+      const selected = new Set(selectedIds);
+      const shift = (pt: Point2D): Point2D => ({ x: Math.round(pt.x + dx), y: Math.round(pt.y + dy) });
+
+      // Rooms carry the walls sitting on their vertices; walls selected on their own move separately.
+      let walls = project.walls;
+      let rooms = project.rooms;
+      for (const room of project.rooms.filter((r) => selected.has(r.id))) {
+        const points = room.points.map(shift);
+        walls = remapWallEndpoints(walls, room.points, points);
+        rooms = rooms.map((r) => (r.id === room.id ? { ...r, points } : r));
+      }
+      const movedWithRoom = new Set(walls.filter((w, i) => w !== project.walls[i]).map((w) => w.id));
+      walls = walls.map((w) =>
+        selected.has(w.id) && !movedWithRoom.has(w.id) ? { ...w, start: shift(w.start), end: shift(w.end) } : w
+      );
+
+      // Openings slide along their wall: use the component of the movement along it.
+      const openings = project.openings.map((o) => {
+        if (!selected.has(o.id)) return o;
+        const wall = walls.find((w) => w.id === o.wallId);
+        if (!wall) return o;
+        const len = distance(wall.start, wall.end);
+        if (len < 1) return o;
+        const along = (dx * (wall.end.x - wall.start.x) + dy * (wall.end.y - wall.start.y)) / len;
+        return { ...o, distanceAlongWall: clampOpeningCentre(len, o.width, o.distanceAlongWall + along) };
+      });
+
+      edit((p) => ({
+        ...p,
+        walls,
+        rooms,
+        openings: clampOpeningsToWalls(walls, openings),
+        furniture: p.furniture.map((f) => (selected.has(f.id) ? { ...f, x: Math.round(f.x + dx), y: Math.round(f.y + dy) } : f)),
+      }));
     },
 
     duplicateSelected: () => {
