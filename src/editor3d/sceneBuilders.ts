@@ -1,7 +1,10 @@
 import * as THREE from 'three';
-import { Wall, Opening, FurnitureItem, Room, Project, ParametricCabinetConfig } from '../types';
+import { Wall, Opening, FurnitureItem, Room, Project } from '../types';
 import { distance } from '../geometry';
 import { createFloorMaterial, createWallMaterial } from '../materials';
+import { createAccent, createSurface } from '../materials/furniture';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { buildFurnitureModel, buildParametricCabinet3D } from './furnitureModels';
 
 export type WallMode = 'solid' | 'transparent' | 'cutaway';
 
@@ -170,7 +173,7 @@ export function buildWallWithOpenings(
     }
 
     // 3. Opening 3D Fixture (Door frame + leaf / Window glass + frame)
-    const fixture = buildOpeningFixture(op, opWidth, wall.thickness);
+    const fixture = buildOpeningFixture(op, opWidth, wall.thickness, wallHeight);
     fixture.position.set(opStart + opWidth / 2, 0, 0);
     group.add(fixture);
 
@@ -201,7 +204,7 @@ function addFrame(
   yBottom: number,
   depth: number,
   material: THREE.Material,
-  withSill: boolean
+  opts: { sill: boolean; head: boolean }
 ) {
   const addBar = (w: number, h: number, x: number, y: number) => {
     const bar = new THREE.Mesh(new THREE.BoxGeometry(w, h, depth), material);
@@ -211,55 +214,52 @@ function addFrame(
   };
   addBar(FRAME_BAR, height, -width / 2 + FRAME_BAR / 2, yBottom + height / 2); // left jamb
   addBar(FRAME_BAR, height, width / 2 - FRAME_BAR / 2, yBottom + height / 2); // right jamb
-  addBar(width - 2 * FRAME_BAR, FRAME_BAR, 0, yBottom + height - FRAME_BAR / 2); // head
-  if (withSill) addBar(width - 2 * FRAME_BAR, FRAME_BAR, 0, yBottom + FRAME_BAR / 2); // sill
+  if (opts.head) addBar(width - 2 * FRAME_BAR, FRAME_BAR, 0, yBottom + height - FRAME_BAR / 2);
+  if (opts.sill) addBar(width - 2 * FRAME_BAR, FRAME_BAR, 0, yBottom + FRAME_BAR / 2);
 }
 
 /**
- * Builds 3D door (frame + leaf + handle) or window (frame + glass) fixtures.
- * Passages get no fixture.
+ * 3D door (frame + leaf + handle) or window (frame + glass); passages get no fixture.
+ * Clipped to `wallHeight`: in the low "section" view a 2.1 m door must not stick out above a 1.2 m wall.
  */
-function buildOpeningFixture(op: Opening, actualWidth: number, wallThickness: number): THREE.Group {
+function buildOpeningFixture(op: Opening, actualWidth: number, wallThickness: number, wallHeight: number): THREE.Group {
   const group = new THREE.Group();
   const frameDepth = wallThickness + 20; // frame slightly proud of the wall faces
 
-  if (op.type.includes('door') || op.type === 'french_window') {
-    const frameMat = new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.6 });
-    const leafMat = new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.5 });
-    const handleMat = new THREE.MeshStandardMaterial({ color: '#e2e8f0', metalness: 0.85, roughness: 0.2 });
+  const top = Math.min(op.elevation + op.height, wallHeight);
+  const height = top - op.elevation;
+  if (height < 150) return group; // the cut wall is lower than the sill: nothing of the fixture is visible
+  const clipped = top < op.elevation + op.height;
 
-    addFrame(group, actualWidth, op.height, op.elevation, frameDepth, frameMat, false);
+  if (op.type.includes('door') || op.type === 'french_window') {
+    const frameMat = createSurface('satin', '#334155');
+    const leafMat = createSurface('satin', '#f8fafc');
+
+    addFrame(group, actualWidth, height, op.elevation, frameDepth, frameMat, { sill: false, head: !clipped });
 
     // Closed leaf inside the frame
     const leafW = actualWidth - 2 * FRAME_BAR;
-    const leafH = op.height - FRAME_BAR;
-    const leaf = new THREE.Mesh(new THREE.BoxGeometry(leafW, leafH, 40), leafMat);
+    const leafH = height - (clipped ? 0 : FRAME_BAR);
+    const leaf = new THREE.Mesh(new RoundedBoxGeometry(leafW, leafH, 40, 1, 6), leafMat);
     leaf.position.set(0, op.elevation + leafH / 2, 0);
     leaf.castShadow = true;
     group.add(leaf);
 
-    const handle = new THREE.Mesh(new THREE.CylinderGeometry(8, 8, 120, 16), handleMat);
-    handle.rotation.z = Math.PI / 2;
-    handle.position.set(leafW / 2 - 80, op.elevation + 1000, 35);
-    group.add(handle);
+    // Lever handle at ~1 m, only if it is within the visible part
+    const handleY = op.elevation + 1000;
+    if (handleY < top - 60) {
+      const handle = new THREE.Mesh(new THREE.CylinderGeometry(8, 8, 120, 16), createAccent('chrome'));
+      handle.rotation.z = Math.PI / 2;
+      handle.position.set(leafW / 2 - 80, handleY, 35);
+      group.add(handle);
+    }
   } else if (op.type === 'window') {
-    const frameMat = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.4 });
-    const glassMat = new THREE.MeshPhysicalMaterial({
-      color: '#e0f2fe',
-      transmission: 0.9,
-      roughness: 0.1,
-      metalness: 0.05,
-      transparent: true,
-      opacity: 0.4,
-    });
+    const frameMat = createSurface('satin', '#1e293b');
+    addFrame(group, actualWidth, height, op.elevation, frameDepth, frameMat, { sill: true, head: !clipped });
 
-    addFrame(group, actualWidth, op.height, op.elevation, frameDepth, frameMat, true);
-
-    const glass = new THREE.Mesh(
-      new THREE.BoxGeometry(actualWidth - 2 * FRAME_BAR, op.height - 2 * FRAME_BAR, 10),
-      glassMat
-    );
-    glass.position.set(0, op.elevation + op.height / 2, 0);
+    const glassH = height - FRAME_BAR - (clipped ? 0 : FRAME_BAR);
+    const glass = new THREE.Mesh(new THREE.BoxGeometry(actualWidth - 2 * FRAME_BAR, glassH, 10), createAccent('glass'));
+    glass.position.set(0, op.elevation + FRAME_BAR + glassH / 2, 0);
     group.add(glass);
   }
 
@@ -267,283 +267,18 @@ function buildOpeningFixture(op: Opening, actualWidth: number, wallThickness: nu
 }
 
 /**
- * Builds Composite 3D Procedural Furniture Mesh (3-12 parts)
+ * 3D model of a plan item (textured, detailed), placed and rotated like on the plan.
+ * Three.js axes: X = plan x, Y = elevation, Z = plan y.
  */
 export function buildFurnitureMesh(item: FurnitureItem, isSelected: boolean): THREE.Group {
   const group = new THREE.Group();
-  // Three.js coords: X = item.x, Y = item.z, Z = item.y
   group.position.set(item.x, item.z, item.y);
   group.rotation.y = (-item.rotation * Math.PI) / 180;
 
-  const baseMat = new THREE.MeshStandardMaterial({
-    color: isSelected ? '#38bdf8' : item.color || '#64748b',
-    roughness: 0.6,
-    metalness: 0.1,
-  });
-
-  const accentMat = new THREE.MeshStandardMaterial({
-    color: '#334155',
-    roughness: 0.35,
-    metalness: 0.4,
-  });
-
-  const W = item.width;
-  const D = item.depth;
-  const H = item.height;
-
-  // 1. Parametric Cabinet
-  if (item.isParametric && item.parametricConfig) {
-    const pGroup = buildParametricCabinet3D(item.parametricConfig, isSelected);
-    group.add(pGroup);
-    return group;
-  }
-
-  // 2. Sofas
-  if (item.category === 'salon' && item.catalogId?.includes('sofa')) {
-    // Main base
-    const baseH = H * 0.45;
-    const baseMesh = new THREE.Mesh(new THREE.BoxGeometry(W, baseH, D), baseMat);
-    baseMesh.position.set(0, baseH / 2, 0);
-    baseMesh.castShadow = true;
-    group.add(baseMesh);
-
-    // Backrest
-    const backH = H * 0.55;
-    const backD = D * 0.28;
-    const backMesh = new THREE.Mesh(new THREE.BoxGeometry(W, backH, backD), baseMat);
-    backMesh.position.set(0, baseH + backH / 2, -D / 2 + backD / 2);
-    backMesh.castShadow = true;
-    group.add(backMesh);
-
-    // Armrests
-    const armW = W * 0.12;
-    const armH = H * 0.45;
-    const leftArm = new THREE.Mesh(new THREE.BoxGeometry(armW, armH, D), baseMat);
-    leftArm.position.set(-W / 2 + armW / 2, baseH + armH / 2, 0);
-    leftArm.castShadow = true;
-    group.add(leftArm);
-
-    const rightArm = new THREE.Mesh(new THREE.BoxGeometry(armW, armH, D), baseMat);
-    rightArm.position.set(W / 2 - armW / 2, baseH + armH / 2, 0);
-    rightArm.castShadow = true;
-    group.add(rightArm);
-
-    // Seat cushions
-    const cCount = W > 2000 ? 3 : 2;
-    const cW = (W - 2 * armW) / cCount;
-    for (let i = 0; i < cCount; i++) {
-      const cMesh = new THREE.Mesh(
-        new THREE.BoxGeometry(cW - 20, 80, D - backD - 30),
-        new THREE.MeshStandardMaterial({ color: item.color, roughness: 0.7 })
-      );
-      cMesh.position.set(-W / 2 + armW + cW * (i + 0.5), baseH + 40, backD / 2 - 10);
-      cMesh.castShadow = true;
-      group.add(cMesh);
-    }
-    return group;
-  }
-
-  // 3. Bed
-  if (item.category === 'dormitorio' && item.catalogId?.includes('bed')) {
-    // Bed frame base
-    const frameH = 300;
-    const frameMesh = new THREE.Mesh(new THREE.BoxGeometry(W, frameH, D), accentMat);
-    frameMesh.position.set(0, frameH / 2, 0);
-    frameMesh.castShadow = true;
-    group.add(frameMesh);
-
-    // Headboard
-    const headH = H;
-    const headD = 120;
-    const headMesh = new THREE.Mesh(new THREE.BoxGeometry(W, headH, headD), baseMat);
-    headMesh.position.set(0, headH / 2, -D / 2 + headD / 2);
-    headMesh.castShadow = true;
-    group.add(headMesh);
-
-    // Mattress
-    const matH = 240;
-    const matMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(W - 40, matH, D - headD - 40),
-      new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.85 })
-    );
-    matMesh.position.set(0, frameH + matH / 2, headD / 2);
-    matMesh.castShadow = true;
-    group.add(matMesh);
-
-    // Pillows
-    const pillowGeo = new THREE.BoxGeometry(W > 1200 ? (W - 200) / 2 : W - 150, 100, 380);
-    const pillowMat = new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.9 });
-    if (W > 1200) {
-      const p1 = new THREE.Mesh(pillowGeo, pillowMat);
-      p1.position.set(-W / 4, frameH + matH + 50, -D / 2 + headD + 220);
-      group.add(p1);
-      const p2 = new THREE.Mesh(pillowGeo, pillowMat);
-      p2.position.set(W / 4, frameH + matH + 50, -D / 2 + headD + 220);
-      group.add(p2);
-    }
-    return group;
-  }
-
-  // 4. Tables & Desks
-  if (item.catalogId?.includes('table') || item.catalogId?.includes('desk')) {
-    // Tabletop
-    const topH = 45;
-    const topMesh = new THREE.Mesh(new THREE.BoxGeometry(W, topH, D), baseMat);
-    topMesh.position.set(0, H - topH / 2, 0);
-    topMesh.castShadow = true;
-    group.add(topMesh);
-
-    // 4 Legs
-    const legW = 60;
-    const legGeo = new THREE.BoxGeometry(legW, H - topH, legW);
-    const legMat = accentMat;
-    const offsets = [
-      [-W / 2 + legW, -D / 2 + legW],
-      [W / 2 - legW, -D / 2 + legW],
-      [W / 2 - legW, D / 2 - legW],
-      [-W / 2 + legW, D / 2 - legW],
-    ];
-    for (const [lx, lz] of offsets) {
-      const leg = new THREE.Mesh(legGeo, legMat);
-      leg.position.set(lx, (H - topH) / 2, lz);
-      leg.castShadow = true;
-      group.add(leg);
-    }
-    return group;
-  }
-
-  // 5. Kitchen Sink
-  if (item.catalogId?.includes('sink')) {
-    // Cabinet
-    const cab = new THREE.Mesh(new THREE.BoxGeometry(W, H, D), baseMat);
-    cab.position.set(0, H / 2, 0);
-    cab.castShadow = true;
-    group.add(cab);
-
-    // Steel sink basin insert
-    const basinMat = new THREE.MeshStandardMaterial({ color: '#cbd5e1', metalness: 0.9, roughness: 0.2 });
-    const basin = new THREE.Mesh(new THREE.BoxGeometry(W * 0.7, 30, D * 0.65), basinMat);
-    basin.position.set(0, H + 15, 0);
-    group.add(basin);
-
-    // Faucet
-    const faucetMat = new THREE.MeshStandardMaterial({ color: '#e2e8f0', metalness: 0.95, roughness: 0.1 });
-    const faucet = new THREE.Mesh(new THREE.CylinderGeometry(15, 15, 200, 16), faucetMat);
-    faucet.position.set(0, H + 100, -D * 0.25);
-    group.add(faucet);
-    return group;
-  }
-
-  // Fallback: Clean architectural procedural volume
-  const bodyMesh = new THREE.Mesh(new THREE.BoxGeometry(W, H, D), baseMat);
-  bodyMesh.position.set(0, H / 2, 0);
-  bodyMesh.castShadow = true;
-  bodyMesh.receiveShadow = true;
-  group.add(bodyMesh);
-
-  return group;
-}
-
-/**
- * Builds 3D Parametric Cabinet with carcass, shelves, drawers, doors
- */
-function buildParametricCabinet3D(config: ParametricCabinetConfig, isSelected: boolean): THREE.Group {
-  const group = new THREE.Group();
-  const {
-    exteriorWidth: W,
-    exteriorHeight: H,
-    exteriorDepth: D,
-    boardThickness: T,
-    plinthHeight: P,
-    finishColor,
-    shelves,
-    drawers,
-    dividers,
-  } = config;
-
-  const cabMat = new THREE.MeshStandardMaterial({
-    color: isSelected ? '#38bdf8' : finishColor || '#f8fafc',
-    roughness: 0.5,
-    metalness: 0.05,
-  });
-
-  const darkMat = new THREE.MeshStandardMaterial({
-    color: '#334155',
-    roughness: 0.7,
-  });
-
-  const sideH = H - P;
-
-  // Plinth
-  if (P > 0) {
-    const plinth = new THREE.Mesh(new THREE.BoxGeometry(W - 20, P, D - 40), darkMat);
-    plinth.position.set(0, P / 2, 0);
-    plinth.castShadow = true;
-    group.add(plinth);
-  }
-
-  // Left & Right uprights
-  const leftSide = new THREE.Mesh(new THREE.BoxGeometry(T, sideH, D), cabMat);
-  leftSide.position.set(-W / 2 + T / 2, P + sideH / 2, 0);
-  leftSide.castShadow = true;
-  group.add(leftSide);
-
-  const rightSide = new THREE.Mesh(new THREE.BoxGeometry(T, sideH, D), cabMat);
-  rightSide.position.set(W / 2 - T / 2, P + sideH / 2, 0);
-  rightSide.castShadow = true;
-  group.add(rightSide);
-
-  // Top & Bottom panels
-  const innerW = W - 2 * T;
-  const bottom = new THREE.Mesh(new THREE.BoxGeometry(innerW, T, D), cabMat);
-  bottom.position.set(0, P + T / 2, 0);
-  bottom.castShadow = true;
-  group.add(bottom);
-
-  const top = new THREE.Mesh(new THREE.BoxGeometry(innerW, T, D), cabMat);
-  top.position.set(0, H - T / 2, 0);
-  top.castShadow = true;
-  group.add(top);
-
-  // Back panel
-  if (config.hasBack) {
-    const back = new THREE.Mesh(new THREE.BoxGeometry(innerW, sideH - 2 * T, 10), cabMat);
-    back.position.set(0, P + sideH / 2, -D / 2 + 5);
-    group.add(back);
-  }
-
-  // Dividers
-  for (const div of dividers) {
-    const divMesh = new THREE.Mesh(new THREE.BoxGeometry(div.thickness, sideH - 2 * T, D - 20), cabMat);
-    const divX = -W / 2 + div.positionFromLeft;
-    divMesh.position.set(divX, P + T + (sideH - 2 * T) / 2, 0);
-    divMesh.castShadow = true;
-    group.add(divMesh);
-  }
-
-  // Shelves
-  for (const s of shelves) {
-    const shelfMesh = new THREE.Mesh(new THREE.BoxGeometry(innerW, s.thickness, D - 20), cabMat);
-    shelfMesh.position.set(0, P + T + s.heightFromBase, 0);
-    shelfMesh.castShadow = true;
-    group.add(shelfMesh);
-  }
-
-  // Drawers
-  for (const d of drawers) {
-    const drMesh = new THREE.Mesh(new THREE.BoxGeometry(innerW - 6, d.frontHeight - 4, D - 30), cabMat);
-    drMesh.position.set(0, P + T + d.positionFromBase + d.frontHeight / 2, 0);
-    drMesh.castShadow = true;
-    group.add(drMesh);
-
-    // Drawer handle
-    const handle = new THREE.Mesh(
-      new THREE.BoxGeometry(160, 18, 25),
-      new THREE.MeshStandardMaterial({ color: '#e2e8f0', metalness: 0.9, roughness: 0.2 })
-    );
-    handle.position.set(0, P + T + d.positionFromBase + d.frontHeight / 2, D / 2);
-    group.add(handle);
-  }
-
+  group.add(
+    item.isParametric && item.parametricConfig
+      ? buildParametricCabinet3D(item.parametricConfig, isSelected)
+      : buildFurnitureModel(item, isSelected)
+  );
   return group;
 }

@@ -147,6 +147,24 @@ export const PropertyInspector: React.FC = () => {
                   </button>
                 </label>
                 <div className="grid grid-cols-3 gap-2 mt-1.5">
+                  {selectedFurniture.shape === 'circle' ? (
+                    <>
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-medium">Diámetro</span>
+                    <input
+                      type="number"
+                      step={unit === 'm' ? '0.05' : '10'}
+                      value={toDisplay(selectedFurniture.width)}
+                      onChange={(e) => {
+                        const d = fromDisplay(parseFloat(e.target.value) || 0);
+                        if (d > 10) updateFurniture(selectedFurniture.id, { width: d, depth: d });
+                      }}
+                      className="w-full text-xs font-bold text-slate-800 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 focus:bg-white"
+                    />
+                  </div>
+                    </>
+                  ) : (
+                    <>
                   <div>
                     <span className="text-[10px] text-slate-400 font-medium">Ancho (X)</span>
                     <input
@@ -186,6 +204,8 @@ export const PropertyInspector: React.FC = () => {
                       className="w-full text-xs font-bold text-slate-800 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 focus:bg-white"
                     />
                   </div>
+                    </>
+                  )}
 
                   <div>
                     <span className="text-[10px] text-slate-400 font-medium">Alto (Z)</span>

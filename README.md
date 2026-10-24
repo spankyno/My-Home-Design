@@ -60,6 +60,9 @@ Funciona de manera completamente **offline y sin registro de usuario**, almacena
 
 ---
 
+### Vista 3D del mobiliario
+Cada pieza del catálogo tiene un **modelo 3D procedural propio** (`src/editor3d/furnitureModels.ts`): sofás con cojines y patas, camas con cabecero, almohadas y edredón, cocinas con puertas, tiradores y fregadero con seno, baño, escalera, lámparas con pantalla luminosa, etc. Los acabados llevan **textura procedural** (madera con veta, tela, acero cepillado, cuarzo, cerámica) teñida con el color del mueble (`src/materials/furniture.ts`), con UV en milímetros reales. La pieza seleccionada se resalta con un contorno y un ligero tinte. Los muebles paramétricos muestran sus puertas. Cada modelo respeta su huella (ancho × fondo) y tiene un presupuesto de rendimiento comprobado por tests.
+
 ### Edición directa en el plano 2D
 Selecciona cualquier elemento con un clic y manipúlalo con el ratón (el panel de propiedades sigue disponible para valores exactos):
 

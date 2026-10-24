@@ -39,7 +39,11 @@ export function hitTest(
       const dy = world.y - f.y;
       const lx = dx * Math.cos(r) - dy * Math.sin(r);
       const ly = dx * Math.sin(r) + dy * Math.cos(r);
-      if (Math.abs(lx) <= f.width / 2 + tol && Math.abs(ly) <= f.depth / 2 + tol) hits.push(f.id);
+      const hw = f.width / 2 + tol;
+      const hd = f.depth / 2 + tol;
+      // Round pieces are hit inside their circle, not their bounding square
+      const inside = f.shape === 'circle' ? (lx / hw) ** 2 + (ly / hd) ** 2 <= 1 : Math.abs(lx) <= hw && Math.abs(ly) <= hd;
+      if (inside) hits.push(f.id);
     }
     const id = choose(hits);
     if (id) return { type: 'furniture', id };

@@ -76,6 +76,8 @@ export interface ResizeOptions {
   /** Round sizes to this step (mm). */
   step?: number;
   minSize?: number;
+  /** Keep width = depth (round pieces): edge handles then resize both axes. */
+  square?: boolean;
 }
 
 /**
@@ -84,7 +86,7 @@ export interface ResizeOptions {
  * start of the drag (`init`), so there is no accumulated error.
  */
 export function resizeFurniture(init: Box, handle: HandleId, mouse: Point2D, opts: ResizeOptions = {}): Box {
-  const { margin = FRAME_MARGIN, keepAspect = false, step = 10, minSize = MIN_FURNITURE_SIZE } = opts;
+  const { margin = FRAME_MARGIN, keepAspect = false, step = 10, minSize = MIN_FURNITURE_SIZE, square = false } = opts;
   const { sx, sy } = HANDLE_DIRS[handle];
 
   const m = toLocal(init, mouse);
@@ -102,6 +104,13 @@ export function resizeFurniture(init: Box, handle: HandleId, mouse: Point2D, opt
 
   width = Math.max(minSize, roundTo(width, step));
   depth = Math.max(minSize, roundTo(depth, step));
+
+  if (square) {
+    // Edge handles drive both axes; the piece grows symmetrically across the dragged axis.
+    if (sy === 0) depth = width;
+    else if (sx === 0) width = depth;
+    else width = depth = Math.max(width, depth);
+  }
 
   // The fixed side stays put: the centre moves by half of the size change.
   const centre = rotateBy({ x: (sx * (width - init.width)) / 2, y: (sy * (depth - init.depth)) / 2 }, init.rotation);

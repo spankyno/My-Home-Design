@@ -19,7 +19,7 @@ import {
 import { useShallow } from 'zustand/react/shallow';
 import { useEditorStore } from '../state/useEditorStore';
 import { ActiveTool, FurnitureCategory, OpeningType } from '../types';
-import { FURNITURE_CATALOG, OPENING_CATALOG, CATEGORY_LABELS } from '../catalog';
+import { FURNITURE_CATALOG, OPENING_CATALOG, CATEGORY_LABELS, furnitureFromCatalog } from '../catalog';
 import { convertToMm, buildRectRoom } from '../geometry';
 import { newId } from '../utils/id';
 
@@ -436,23 +436,7 @@ export const ToolSidebar: React.FC = () => {
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              addFurniture({
-                                id: newId('f'),
-                                catalogId: item.id,
-                                name: item.name,
-                                category: item.category,
-                                x: 2500,
-                                y: 2500,
-                                z: item.defaultElevation || 0,
-                                width: item.defaultWidth,
-                                depth: item.defaultDepth,
-                                height: item.defaultHeight,
-                                rotation: 0,
-                                color: item.defaultColor,
-                                material: item.defaultMaterial,
-                                isLocked: false,
-                                lockProportions: true,
-                              });
+                              addFurniture(furnitureFromCatalog(item, { x: 2500, y: 2500 }));
                             }}
                             className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold transition-colors"
                             title="Insertar inmediatamente en el centro del plano"

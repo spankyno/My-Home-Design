@@ -72,3 +72,61 @@ Antes solo se podían **mover** muebles, muros y habitaciones; el redimensionado
 
 ## Verificación
 Lógica pura en `src/editor2d/manipulation.ts` con 25 tests; además, 14 comprobaciones con ratón real en Chromium (clic, asas, mover, girar, deshacer, aberturas, salir del lienzo) sin errores de consola. Total: 71 tests, `tsc` estricto y build correctos.
+
+---
+
+# Tercera iteración
+
+## Peticiones
+- **Quitados** los botones "Trazar" (Habitación a medida y Pared individual) y "En pared" (Puertas y ventanas, queda solo "Colocar"). Se eliminó también el código de dibujo con ratón que quedaba inalcanzable (`draw_wall`, `draw_room_rect`, `draw_room_poly`).
+- **Flechas del teclado** mueven la selección (muebles, habitaciones con sus muros, muros y aberturas a lo largo del muro): 10 mm, `Shift` = celda de rejilla, `Alt` = 1 mm. Ráfagas = un paso de deshacer.
+- **"Cota manual" → "Medir"**: dos clics muestran la distancia (más ΔX/ΔY) y el resultado queda en pantalla; antes creaba una cota permanente.
+- **Selección revisada** (ver abajo).
+- **Desplazar** funciona.
+- **Imán de objetos** al arrastrar y al colocar desde el catálogo: se pega a caras de muros y bordes/centros de otras piezas, con guías. Alcance de 8 px en pantalla, así que con más zoom se pueden acercar mucho más; `Alt` lo desactiva. La rejilla del cursor se afina con el zoom.
+
+## Causas raíz encontradas
+| Síntoma | Causa | Arreglo |
+|---|---|---|
+| "Desplazar" no hacía nada (y "Medir" tampoco medía) | `handleSelectTool` fijaba la herramienta y a continuación `setPendingFurnitureCatalogId(null)` la reseteaba a `select`: **ninguna herramienta de la barra se podía activar** | Semántica de herramientas en el store; la barra solo llama a `setActiveTool` |
+| Al mover un objeto "se movía/seleccionaba otro" | (1) `initialRoomPoints`/`initialWallEndpoints` quedaban guardados tras clicar una habitación: **al arrastrar luego un mueble, la habitación y sus muros se movían con él**. (2) Las aberturas se detectaban con un disco de radio `ancho/2+100` mm que invadía la habitación. (3) Los elementos de capas ocultas seguían siendo seleccionables. (4) Con piezas solapadas se cambiaba de selección aunque agarraras la ya seleccionada; con varias seleccionadas, un clic perdía el grupo. (5) Muros/habitaciones: se elegía el primero que cumplía, no el más cercano/específico | Nuevo `hitTest.ts` (puro, con tests): rectángulo de la abertura sobre su muro, capas visibles, preferencia por lo seleccionado, habitación más pequeña, muro más cercano, tolerancias en píxeles. Las instantáneas de movimiento se limpian al terminar y al empezar cada gesto. El grupo se mantiene al arrastrar y se colapsa solo si fue un clic |
+| "Colocar" ignoraba el tamaño del tipo de abertura (siempre 800/1200 mm) | Tamaños fijos en el canvas; los reales solo los usaba "En pared" | Catálogo compartido `OPENING_CATALOG` + `planOpeningPlacement` (también unifica la vista previa y la colocación, que estaban duplicadas) |
+
+## Verificación
+89 tests unitarios (nuevos: `hitTest`, imán, rejilla adaptable, herramientas, teclado) y 30 comprobaciones con ratón real en Chromium (botones, pan, medir, flechas, selección y regresión del bug de arrastre, colocación con tamaño real, imán a distintos zooms, `Alt`), sin errores de consola.
+
+---
+
+# Cuarta iteración: objetos nuevos y 3D con detalle
+
+## Objetos añadidos (medidas en mm)
+| Grupo | Objeto | Medidas |
+|---|---|---|
+| Salón | Mesa de Salón | 1600 × 900 (alto 750) |
+| Salón | Silla de Salón | 400 × 400 (alto 900) |
+| Salón | Puff Redondo | circular, Ø 600 (alto 400) |
+| Dormitorio | Galán de Noche | 500 × 200 (alto 1100) |
+| Dormitorio | Lámpara de Pie Dormitorio | circular, Ø 400 (alto 1600) |
+| Cocina | Silla de Cocina | 400 × 400 (alto 900) |
+| Cocina | Mesa de Cocina | 1500 × 700 (alto 750) |
+
+Las alturas no estaban en la petición; son valores habituales y se pueden cambiar en el inspector.
+
+**Piezas circulares** (nuevo `shape: 'circle'`): se dibujan como círculo en 2D, se seleccionan por su círculo (no por el cuadrado), se redimensionan con las asas manteniéndose redondas y el inspector muestra un único campo "Diámetro".
+
+## 3D: de cubos a modelos con detalle
+Causa: solo había modelos para sofás, camas, mesas y fregadero; **todo lo demás era un cubo** de un solo color liso, y al seleccionar una pieza se pintaba entera de azul.
+- 40 modelos procedurales (uno por pieza del catálogo) en `furnitureModels.ts`; los muebles personalizados antiguos se resuelven por nombre.
+- Materiales con textura procedural (madera, tela, metal cepillado, piedra) + acabados (cromo, latón, vidrio, cerámica, pantallas luminosas).
+- Selección: contorno + tinte, sin perder el detalle.
+- Armario paramétrico con **puertas reales** (antes quedaba abierto) y tiradores.
+- En "Sección baja" de muros, puertas y ventanas se recortan a la altura del muro (los marcos sobresalían flotando).
+- Catálogo → mueble en una sola función (`furnitureFromCatalog`); había copias duplicadas.
+
+## Errores encontrados por el camino
+- **Las cotas dinámicas se comprobaban antes que las asas y con un radio enorme**: si una cota quedaba junto a un asa, el clic abría el editor de cota en vez de redimensionar. Ahora van después de las asas y su zona es la de la propia etiqueta.
+- La estantería salía con 83 000 triángulos y 150 mallas (cada libro era una caja redondeada): ahora libros fusionados por color, ~1 800 triángulos.
+- Varios defectos geométricos cazados mirando la galería: pata flotante del sofá chaise, barra de horno y de galán en altura incorrecta (cilindros girados), ruedas de silla bajo el suelo, puntas de pata asomando por el asiento, largueros de escalera hundidos.
+
+## Verificación
+177 tests (nuevos: un test por pieza del catálogo que comprueba que tiene modelo propio, que cabe en su huella, altura correcta, está compuesta de varias partes y cumple presupuesto de triángulos/mallas); 14 + 30 comprobaciones de ratón anteriores sin regresiones; revisión visual de las 40 piezas en el navegador.

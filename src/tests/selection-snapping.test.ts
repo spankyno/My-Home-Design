@@ -129,3 +129,14 @@ describe('object snapping', () => {
     expect(snapRect(rect, lines, tol).dy).toBe(0);
   });
 });
+
+describe('round pieces: hit test', () => {
+  it('a circle is hit inside its circle, not in the corners of its bounding square', () => {
+    const p = scene();
+    p.furniture = [{ ...piece('puff', 2000, 2000, 600, 600), shape: 'circle' }];
+    expect(hitTest(p, { x: 2000, y: 2000 }, { zoom: Z })?.id).toBe('puff');
+    expect(hitTest(p, { x: 2000 + 290, y: 2000 }, { zoom: Z })?.id).toBe('puff');
+    // the square's corner (285, 285 from centre) is outside the circle -> falls through to the room
+    expect(hitTest(p, { x: 2000 + 285, y: 2000 + 285 }, { zoom: Z })?.type).toBe('room');
+  });
+});

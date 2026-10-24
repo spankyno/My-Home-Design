@@ -158,3 +158,21 @@ describe('opening manipulation', () => {
     expect(resizeOpeningEnd(op, 'start', -500, 5000)).toEqual({ width: 2500, distanceAlongWall: 1250 });
   });
 });
+
+describe('round pieces', () => {
+  const circle: Box = { x: 1000, y: 1000, width: 600, depth: 600, rotation: 0 };
+
+  it('edge handles keep a circle round and the opposite side fixed', () => {
+    const r = resizeFurniture(circle, 'e', { x: 1000 + 300 + 30 + 200, y: 1000 }, { square: true, step: 10 });
+    expect(r.width).toBe(800);
+    expect(r.depth).toBe(800);
+    expect(r.x - r.width / 2).toBe(700); // west side unchanged
+    expect(r.y).toBe(1000);
+  });
+
+  it('corner handles keep it round too', () => {
+    const r = resizeFurniture(circle, 'se', { x: 1000 + 300 + 30 + 100, y: 1000 + 300 + 30 + 60 }, { square: true, keepAspect: true, step: 10 });
+    expect(r.width).toBe(r.depth);
+    expect(r.width).toBeGreaterThan(600);
+  });
+});

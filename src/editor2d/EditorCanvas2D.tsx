@@ -39,7 +39,7 @@ import {
   moveOpeningAlongWall,
   resizeOpeningEnd,
 } from './manipulation';
-import { FURNITURE_CATALOG, OPENING_CATALOG } from '../catalog';
+import { FURNITURE_CATALOG, OPENING_CATALOG, furnitureFromCatalog } from '../catalog';
 import { newId } from '../utils/id';
 import { hitTest } from './hitTest';
 import { planOpeningPlacement } from './placement';
@@ -64,6 +64,9 @@ type HandleDrag =
 /** Handles are hit-tested and drawn at a constant on-screen size, whatever the zoom. */
 const HANDLE_HIT_PX = 10;
 const HANDLE_DRAW_PX = 5;
+/** Half-size (px) of a dimension badge's click area. */
+const BADGE_HALF_W_PX = 24;
+const BADGE_HALF_H_PX = 11;
 /** A press only becomes a drag after the pointer travels this far (px): clicks never nudge objects. */
 const DRAG_THRESHOLD_PX = 4;
 
@@ -819,9 +822,10 @@ export const EditorCanvas2D: React.FC = () => {
     const hw = item.width / 2;
     const hd = item.depth / 2;
 
-    // Body rectangle
+    // Body: rounded rectangle, or a circle for round pieces (puff, lamps)
     ctx.beginPath();
-    ctx.roundRect(-hw, -hd, item.width, item.depth, Math.min(40, item.depth * 0.1));
+    if (item.shape === 'circle') ctx.ellipse(0, 0, hw, hd, 0, 0, Math.PI * 2);
+    else ctx.roundRect(-hw, -hd, item.width, item.depth, Math.min(40, item.depth * 0.1));
     ctx.fillStyle = item.color || '#94a3b8';
     ctx.fill();
     ctx.strokeStyle = isSelected ? '#0284c7' : '#334155';
@@ -907,6 +911,44 @@ export const EditorCanvas2D: React.FC = () => {
       ctx.ellipse(0, hd * 0.35, hw * 0.75, hd * 0.45, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+    } else if (item.catalogId === 'puff') {
+      // Quilted top: inner ring + centre button
+      ctx.beginPath();
+      ctx.ellipse(0, 0, hw * 0.62, hd * 0.62, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.5)';
+      ctx.beginPath();
+      ctx.arc(0, 0, Math.min(24, hw * 0.08), 0, Math.PI * 2);
+      ctx.fill();
+    } else if (item.catalogId === 'bedroom_lamp' || item.catalogId === 'floor_lamp') {
+      // Lamp shade ring + pole
+      ctx.beginPath();
+      ctx.ellipse(0, 0, hw * 0.55, hd * 0.55, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.6)';
+      ctx.beginPath();
+      ctx.arc(0, 0, Math.min(22, hw * 0.1), 0, Math.PI * 2);
+      ctx.fill();
+    } else if (item.catalogId?.endsWith('_chair')) {
+      // Chair: seat outline + back rail along the rear edge
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+      ctx.fillRect(-hw, -hd, item.width, item.depth * 0.2);
+      ctx.strokeRect(-hw, -hd, item.width, item.depth * 0.2);
+      ctx.strokeRect(-hw * 0.78, -hd * 0.45, item.width * 0.78, item.depth * 0.78);
+    } else if (item.catalogId === 'valet_stand') {
+      // Valet stand: hanger bar + seat tray
+      ctx.beginPath();
+      ctx.moveTo(-hw, -hd * 0.5);
+      ctx.lineTo(hw, -hd * 0.5);
+      ctx.stroke();
+      ctx.strokeRect(-hw * 0.7, -hd * 0.1, item.width * 0.7, item.depth * 0.6);
+    } else if (item.catalogId?.endsWith('_table')) {
+      // Tables: leg positions at the corners
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+      const legS = Math.min(70, item.depth * 0.14);
+      for (const [lx, ly] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        ctx.fillRect(lx * (hw - 20 - legS / 2) - legS / 2, ly * (hd - 20 - legS / 2) - legS / 2, legS, legS);
+      }
     } else if (item.isParametric) {
       // Parametric cabinet layout line indication
       ctx.setLineDash([30, 20]);
@@ -1340,7 +1382,11 @@ export const EditorCanvas2D: React.FC = () => {
         const item = project.furniture.find((f) => f.id === drag.id);
         if (!item) return;
         // Corner handles follow the piece's "lock proportions" setting; Shift inverts it.
-        const r = resizeFurniture(drag.init, drag.handle, pointer, { keepAspect: item.lockProportions !== invertAspect });
+        const round = item.shape === 'circle';
+        const r = resizeFurniture(drag.init, drag.handle, pointer, {
+          keepAspect: round || item.lockProportions !== invertAspect,
+          square: round,
+        });
         updateFurniture(drag.id, { x: r.x, y: r.y, width: r.width, depth: r.depth });
         return;
       }
@@ -1442,23 +1488,7 @@ export const EditorCanvas2D: React.FC = () => {
       const cat = FURNITURE_CATALOG.find((c) => c.id === pendingFurnitureCatalogId);
       if (cat) {
         const placed = snapGhost(cat.defaultWidth, cat.defaultDepth, world, e.altKey).pos;
-        addFurniture({
-          id: newId('f'),
-          catalogId: cat.id,
-          name: cat.name,
-          category: cat.category,
-          x: placed.x,
-          y: placed.y,
-          z: 0,
-          width: cat.defaultWidth,
-          depth: cat.defaultDepth,
-          height: cat.defaultHeight,
-          rotation: 0,
-          color: cat.defaultColor,
-          material: cat.defaultMaterial,
-          isLocked: false,
-          lockProportions: true,
-        });
+        addFurniture(furnitureFromCatalog(cat, placed));
       }
       setPendingFurnitureCatalogId(null);
       setActiveTool('select');
@@ -1482,16 +1512,6 @@ export const EditorCanvas2D: React.FC = () => {
     if (activeTool === 'select') {
       pressOrigin.current = { x: e.clientX, y: e.clientY };
       dragStarted.current = false;
-
-      // Check if user clicked on any Dynamic Dimension badge to edit separation
-      for (const dim of activeDynamicDims) {
-        const midX = (dim.start.x + dim.end.x) / 2;
-        const midY = (dim.start.y + dim.end.y) / 2;
-        if (distance(rawWorld, { x: midX, y: midY }) < Math.max(180, 24 / zoom)) {
-          setDimensionEditTarget(dim);
-          return;
-        }
-      }
 
       // Check if clicked on rotation handle of selected item
       if (selectedIds.length === 1) {
@@ -1534,6 +1554,17 @@ export const EditorCanvas2D: React.FC = () => {
         setHandleDrag(drag);
         setDragMode('resize');
         return;
+      }
+
+      // Dynamic dimension badges (click to type an exact separation). They come AFTER the handles so a badge
+      // sitting next to a handle can't swallow the click, and their hit area is the label itself (screen px).
+      for (const dim of activeDynamicDims) {
+        const midX = (dim.start.x + dim.end.x) / 2;
+        const midY = (dim.start.y + dim.end.y) / 2;
+        if (Math.abs(rawWorld.x - midX) * zoom <= BADGE_HALF_W_PX && Math.abs(rawWorld.y - midY) * zoom <= BADGE_HALF_H_PX) {
+          setDimensionEditTarget(dim);
+          return;
+        }
       }
 
       // What is under the cursor? (layer-aware, see hitTest.ts)

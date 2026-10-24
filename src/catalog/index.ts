@@ -1,4 +1,5 @@
-import { FurnitureCategory, OpeningType } from '../types';
+import { FurnitureCategory, FurnitureItem, OpeningType } from '../types';
+import { newId } from '../utils/id';
 
 export interface CatalogItemDefinition {
   id: string;
@@ -12,6 +13,8 @@ export interface CatalogItemDefinition {
   defaultMaterial: string;
   description: string;
   iconName: string;
+  /** Round pieces: width = depth = diameter. */
+  shape?: 'rect' | 'circle';
 }
 
 export const FURNITURE_CATALOG: CatalogItemDefinition[] = [
@@ -107,6 +110,46 @@ export const FURNITURE_CATALOG: CatalogItemDefinition[] = [
     description: 'Lámpara de pie de arco con pantalla',
     iconName: 'Lamp',
   },
+  {
+    id: 'living_table',
+    name: 'Mesa de Salón',
+    category: 'salon',
+    defaultWidth: 1600,
+    defaultDepth: 900,
+    defaultHeight: 750,
+    defaultElevation: 0,
+    defaultColor: '#a16207',
+    defaultMaterial: 'wood_oak',
+    description: 'Mesa de salón de 160×90 cm con tablero de madera',
+    iconName: 'Table',
+  },
+  {
+    id: 'living_chair',
+    name: 'Silla de Salón',
+    category: 'salon',
+    defaultWidth: 400,
+    defaultDepth: 400,
+    defaultHeight: 900,
+    defaultElevation: 0,
+    defaultColor: '#64748b',
+    defaultMaterial: 'fabric_gray',
+    description: 'Silla tapizada de 40×40 cm con respaldo',
+    iconName: 'Armchair',
+  },
+  {
+    id: 'puff',
+    name: 'Puff Redondo',
+    category: 'salon',
+    defaultWidth: 600,
+    defaultDepth: 600,
+    defaultHeight: 400,
+    defaultElevation: 0,
+    defaultColor: '#f59e0b',
+    defaultMaterial: 'fabric_velvet',
+    description: 'Puff circular de 60 cm de diámetro, tapizado',
+    iconName: 'Circle',
+    shape: 'circle',
+  },
 
   // DORMITORIO
   {
@@ -187,6 +230,33 @@ export const FURNITURE_CATALOG: CatalogItemDefinition[] = [
     description: 'Cómoda amplia con tiradores metálicos',
     iconName: 'Layers',
   },
+  {
+    id: 'valet_stand',
+    name: 'Galán de Noche',
+    category: 'dormitorio',
+    defaultWidth: 500,
+    defaultDepth: 200,
+    defaultHeight: 1100,
+    defaultElevation: 0,
+    defaultColor: '#78350f',
+    defaultMaterial: 'wood_walnut',
+    description: 'Galán de noche de 50×20 cm con percha, asiento y barra de pantalón',
+    iconName: 'Shirt',
+  },
+  {
+    id: 'bedroom_lamp',
+    name: 'Lámpara de Pie Dormitorio',
+    category: 'dormitorio',
+    defaultWidth: 400,
+    defaultDepth: 400,
+    defaultHeight: 1600,
+    defaultElevation: 0,
+    defaultColor: '#f59e0b',
+    defaultMaterial: 'brass',
+    description: 'Lámpara de pie circular de 40 cm de diámetro con pantalla',
+    iconName: 'Lamp',
+    shape: 'circle',
+  },
 
   // COCINA
   {
@@ -253,6 +323,32 @@ export const FURNITURE_CATALOG: CatalogItemDefinition[] = [
     defaultMaterial: 'quartz_black',
     description: 'Isla central con encimera de cuarzo y muebles inferiores',
     iconName: 'Columns',
+  },
+  {
+    id: 'kitchen_chair',
+    name: 'Silla de Cocina',
+    category: 'cocina',
+    defaultWidth: 400,
+    defaultDepth: 400,
+    defaultHeight: 900,
+    defaultElevation: 0,
+    defaultColor: '#e2e8f0',
+    defaultMaterial: 'wood_white',
+    description: 'Silla de cocina de 40×40 cm con respaldo de listones',
+    iconName: 'Armchair',
+  },
+  {
+    id: 'kitchen_table',
+    name: 'Mesa de Cocina',
+    category: 'cocina',
+    defaultWidth: 1500,
+    defaultDepth: 700,
+    defaultHeight: 750,
+    defaultElevation: 0,
+    defaultColor: '#d6b88a',
+    defaultMaterial: 'wood_oak',
+    description: 'Mesa de cocina de 150×70 cm',
+    iconName: 'Table',
   },
 
   // BAÑO
@@ -453,3 +549,25 @@ export const OPENING_CATALOG: OpeningDefinition[] = [
   { type: 'french_window', name: 'Balconera / Ventanal', desc: '1600 × 2100 mm a suelo', width: 1600, height: 2100, elevation: 0 },
   { type: 'passage', name: 'Hueco de Paso', desc: '900 × 2100 mm sin hoja', width: 900, height: 2100, elevation: 0 },
 ];
+
+/** Builds the plan item for a catalog entry, centred at (x, y). One place for every "add from catalog" path. */
+export function furnitureFromCatalog(def: CatalogItemDefinition, at: { x: number; y: number }): FurnitureItem {
+  return {
+    id: newId('f'),
+    catalogId: def.id,
+    name: def.name,
+    category: def.category,
+    x: at.x,
+    y: at.y,
+    z: def.defaultElevation || 0,
+    width: def.defaultWidth,
+    depth: def.defaultDepth,
+    height: def.defaultHeight,
+    rotation: 0,
+    color: def.defaultColor,
+    material: def.defaultMaterial,
+    isLocked: false,
+    lockProportions: true,
+    ...(def.shape ? { shape: def.shape } : {}),
+  };
+}

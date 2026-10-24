@@ -167,6 +167,8 @@ export interface FurnitureItem {
   material: string;
   isLocked: boolean;
   lockProportions: boolean;
+  /** 'circle' pieces (puff, lamp...) are round: width = depth = diameter. Default: rectangular. */
+  shape?: 'rect' | 'circle';
   isParametric?: boolean;
   parametricConfig?: ParametricCabinetConfig;
 }
